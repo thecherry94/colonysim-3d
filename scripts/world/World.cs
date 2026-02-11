@@ -8,9 +8,11 @@ using Godot;
 /// Manages chunks in a Dictionary keyed by chunk coordinate.
 /// Provides world-space block access and coordinate conversion.
 /// </summary>
+[Tool]
 public partial class World : Node3D
 {
     private readonly Dictionary<Vector3I, Chunk> _chunks = new();
+    private TerrainGenerator _terrainGenerator;
 
     /// <summary>
     /// Convert world block coordinate to chunk coordinate.
@@ -68,8 +70,10 @@ public partial class World : Node3D
     /// Load a grid of chunks centered at the given chunk coordinate.
     /// Only loads Y=0 layer for now (single vertical layer).
     /// </summary>
-    public void LoadChunkArea(Vector3I center, int radius)
+    public void LoadChunkArea(Vector3I center, int radius, int seed = 42)
     {
+        _terrainGenerator ??= new TerrainGenerator(seed);
+
         for (int x = center.X - radius; x <= center.X + radius; x++)
         for (int z = center.Z - radius; z <= center.Z + radius; z++)
         {
@@ -102,35 +106,10 @@ public partial class World : Node3D
         GD.Print($"Loaded chunk at ({chunkCoord.X}, {chunkCoord.Y}, {chunkCoord.Z}): {chunk.CountSolidBlocks()} solid blocks");
     }
 
-    /// <summary>
-    /// Simple test terrain: sin/cos height variation with grass/dirt/stone layers.
-    /// Uses world coordinates so terrain is seamless across chunk boundaries.
-    /// </summary>
     private void FillChunkTerrain(Chunk chunk, Vector3I chunkCoord)
     {
-        if (chunkCoord.Y != 0) return;
-
         var blocks = new BlockType[Chunk.SIZE, Chunk.SIZE, Chunk.SIZE];
-        for (int lx = 0; lx < Chunk.SIZE; lx++)
-        for (int lz = 0; lz < Chunk.SIZE; lz++)
-        {
-            int worldX = chunkCoord.X * Chunk.SIZE + lx;
-            int worldZ = chunkCoord.Z * Chunk.SIZE + lz;
-
-            // Gentle rolling terrain: base height 4, varies +/- 2
-            int height = 4 + (int)(Mathf.Sin(worldX * 0.3f) + Mathf.Cos(worldZ * 0.3f));
-            height = Mathf.Clamp(height, 1, Chunk.SIZE - 1);
-
-            for (int ly = 0; ly <= height && ly < Chunk.SIZE; ly++)
-            {
-                if (ly == height)
-                    blocks[lx, ly, lz] = BlockType.Grass;
-                else if (ly >= height - 2)
-                    blocks[lx, ly, lz] = BlockType.Dirt;
-                else
-                    blocks[lx, ly, lz] = BlockType.Stone;
-            }
-        }
+        _terrainGenerator.GenerateChunkBlocks(blocks, chunkCoord);
         chunk.SetBlockData(blocks);
     }
 

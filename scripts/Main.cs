@@ -2,6 +2,7 @@ namespace ColonySim;
 
 using Godot;
 
+[Tool]
 public partial class Main : Node3D
 {
     private World _world;
@@ -12,12 +13,21 @@ public partial class Main : Node3D
 
         SetupWorld();
 
-        // Point camera at center of 3x3 chunk grid
-        var camera = GetNode<Camera3D>("Camera3D");
-        camera.Position = new Vector3(8, 30, 45);
-        camera.LookAt(new Vector3(8, 4, 8), Vector3.Up);
+        if (!Engine.IsEditorHint())
+        {
+            // Runtime only: reposition camera and spawn test balls
+            var camera = GetNode<Camera3D>("Camera3D");
+            camera.Position = new Vector3(8, 30, 45);
+            camera.LookAt(new Vector3(8, 4, 8), Vector3.Up);
 
-        SpawnTestBalls();
+            // Block interaction (left-click to remove)
+            var blockInteraction = new BlockInteraction();
+            blockInteraction.Name = "BlockInteraction";
+            AddChild(blockInteraction);
+            blockInteraction.Initialize(camera, _world);
+
+            SpawnTestBalls();
+        }
     }
 
     private void SetupWorld()
