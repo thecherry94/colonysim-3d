@@ -1,3 +1,26 @@
-[gd_scene format=3 uid="uid://b3dmji6i2d11i"]
+[gd_scene load_steps=3 format=3 uid="uid://b3dmji6i2d11i"]
 
-[node name="Origin" type="Node3D" unique_id=309674972]
+[ext_resource type="Script" path="res://scripts/Main.cs" id="1"]
+
+[sub_resource type="Environment" id="Environment_1"]
+background_mode = 1
+background_color = Color(0.4, 0.6, 0.8, 1)
+ambient_light_source = 1
+ambient_light_color = Color(0.3, 0.3, 0.35, 1)
+ambient_light_energy = 0.5
+
+[node name="Origin" type="Node3D"]
+script = ExtResource("1")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 8, 20, 25)
+fov = 70.0
+near = 0.05
+far = 500.0
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.707107, 0.707107, 0, -0.707107, 0.707107, 0, 20, 0)
+shadow_enabled = true
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_1")
