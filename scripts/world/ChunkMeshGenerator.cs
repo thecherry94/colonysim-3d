@@ -154,4 +154,56 @@ public static class ChunkMeshGenerator
         GD.Print($"ChunkMeshGenerator: {totalVertices} vertices, {totalTriangles} triangles across {surfaceCount} surfaces");
         return mesh;
     }
+
+    /// <summary>
+    /// Builds a flat Vector3[] of collision triangles for ConcavePolygonShape3D.
+    /// Every 3 consecutive vertices form one triangle. All block types combined.
+    /// </summary>
+    public static Vector3[] GenerateCollisionFaces(
+        BlockType[,,] blocks,
+        Func<int, int, int, BlockType> getNeighborBlock)
+    {
+        var collisionVerts = new List<Vector3>();
+
+        for (int x = 0; x < SIZE; x++)
+        for (int y = 0; y < SIZE; y++)
+        for (int z = 0; z < SIZE; z++)
+        {
+            if (!BlockData.IsSolid(blocks[x, y, z])) continue;
+
+            var blockPos = new Vector3(x, y, z);
+
+            for (int f = 0; f < 6; f++)
+            {
+                ref readonly FaceDef face = ref Faces[f];
+                int nx = x + face.NeighborDir.X;
+                int ny = y + face.NeighborDir.Y;
+                int nz = z + face.NeighborDir.Z;
+
+                BlockType neighbor;
+                if (nx >= 0 && nx < SIZE && ny >= 0 && ny < SIZE && nz >= 0 && nz < SIZE)
+                    neighbor = blocks[nx, ny, nz];
+                else
+                    neighbor = getNeighborBlock(nx, ny, nz);
+
+                if (BlockData.IsSolid(neighbor)) continue;
+
+                // Flat vertex triples, CW winding: {v0,v2,v1, v0,v3,v2}
+                Vector3 v0 = blockPos + face.V0;
+                Vector3 v1 = blockPos + face.V1;
+                Vector3 v2 = blockPos + face.V2;
+                Vector3 v3 = blockPos + face.V3;
+
+                collisionVerts.Add(v0);
+                collisionVerts.Add(v2);
+                collisionVerts.Add(v1);
+                collisionVerts.Add(v0);
+                collisionVerts.Add(v3);
+                collisionVerts.Add(v2);
+            }
+        }
+
+        GD.Print($"ChunkMeshGenerator: {collisionVerts.Count / 3} collision triangles");
+        return collisionVerts.ToArray();
+    }
 }

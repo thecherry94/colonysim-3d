@@ -12,6 +12,8 @@ public partial class Chunk : Node3D
 
     private BlockType[,,] _blocks = new BlockType[SIZE, SIZE, SIZE];
     private MeshInstance3D _meshInstance;
+    private StaticBody3D _staticBody;
+    private CollisionShape3D _collisionShape;
 
     public Vector3I ChunkCoord { get; private set; }
 
@@ -24,6 +26,13 @@ public partial class Chunk : Node3D
         _meshInstance = new MeshInstance3D();
         _meshInstance.Name = "MeshInstance";
         AddChild(_meshInstance);
+
+        _staticBody = new StaticBody3D();
+        _staticBody.Name = "StaticBody";
+        AddChild(_staticBody);
+        _collisionShape = new CollisionShape3D();
+        _collisionShape.Name = "CollisionShape";
+        _staticBody.AddChild(_collisionShape);
 
         GD.Print($"Chunk initialized at ({chunkCoord.X}, {chunkCoord.Y}, {chunkCoord.Z})");
     }
@@ -62,8 +71,21 @@ public partial class Chunk : Node3D
         var mesh = ChunkMeshGenerator.GenerateMesh(_blocks, getNeighborBlock);
         _meshInstance.Mesh = mesh;
 
+        // Build collision
+        var collisionFaces = ChunkMeshGenerator.GenerateCollisionFaces(_blocks, getNeighborBlock);
+        if (collisionFaces.Length > 0)
+        {
+            var shape = new ConcavePolygonShape3D();
+            shape.SetFaces(collisionFaces);
+            _collisionShape.Shape = shape;
+        }
+        else
+        {
+            _collisionShape.Shape = null;
+        }
+
         int surfaceCount = mesh.GetSurfaceCount();
-        GD.Print($"Chunk ({ChunkCoord.X},{ChunkCoord.Y},{ChunkCoord.Z}): {solidCount} solid blocks, mesh has {surfaceCount} surfaces");
+        GD.Print($"Chunk ({ChunkCoord.X},{ChunkCoord.Y},{ChunkCoord.Z}): {solidCount} solid blocks, mesh has {surfaceCount} surfaces, {collisionFaces.Length / 3} collision tris");
     }
 
     /// <summary>
