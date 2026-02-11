@@ -6,6 +6,7 @@ using Godot;
 /// <summary>
 /// A 16x16x16 block chunk. Manages block storage, mesh rendering.
 /// </summary>
+[Tool]
 public partial class Chunk : Node3D
 {
     public const int SIZE = 16;
@@ -33,6 +34,15 @@ public partial class Chunk : Node3D
         _collisionShape = new CollisionShape3D();
         _collisionShape.Name = "CollisionShape";
         _staticBody.AddChild(_collisionShape);
+
+        // Make children visible in editor scene tree
+        if (Engine.IsEditorHint())
+        {
+            var root = GetTree().EditedSceneRoot;
+            _meshInstance.Owner = root;
+            _staticBody.Owner = root;
+            _collisionShape.Owner = root;
+        }
 
         GD.Print($"Chunk initialized at ({chunkCoord.X}, {chunkCoord.Y}, {chunkCoord.Z})");
     }

@@ -28,6 +28,11 @@ public partial class Colonist : CharacterBody3D
     private Vector3 _lastProgressPos;
     private float _jumpGraceTimer;
 
+    // Path visualization
+    private MeshInstance3D _pathMeshInstance;
+    private ImmediateMesh _pathMesh;
+    private bool _showPath = true;
+
     public void Initialize(World world, VoxelPathfinder pathfinder)
     {
         _world = world;
@@ -57,7 +62,44 @@ public partial class Colonist : CharacterBody3D
         collider.Position = new Vector3(0, 0.8f, 0);
         AddChild(collider);
 
+        // Path visualization (added to scene root so it draws in world space)
+        _pathMesh = new ImmediateMesh();
+        _pathMeshInstance = new MeshInstance3D();
+        _pathMeshInstance.Mesh = _pathMesh;
+        _pathMeshInstance.Name = "PathVisualization";
+        // Use a bright material that's always visible
+        var pathMat = new StandardMaterial3D();
+        pathMat.AlbedoColor = new Color(1.0f, 0.2f, 0.2f); // Red path
+        pathMat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+        pathMat.NoDepthTest = true; // Draw on top of everything
+        _pathMeshInstance.MaterialOverride = pathMat;
+
+        // Add path visualization to scene root (world space, not colonist-local)
+        GetTree().Root.CallDeferred(Node.MethodName.AddChild, _pathMeshInstance);
+
         GD.Print($"Colonist spawned at {Position}");
+    }
+
+    public override void _ExitTree()
+    {
+        if (_pathMeshInstance != null && _pathMeshInstance.IsInsideTree())
+        {
+            _pathMeshInstance.GetParent().RemoveChild(_pathMeshInstance);
+            _pathMeshInstance.QueueFree();
+        }
+    }
+
+    public override void _UnhandledInput(InputEvent @event)
+    {
+        if (@event is InputEventKey keyEvent && keyEvent.Pressed && keyEvent.Keycode == Key.F1)
+        {
+            _showPath = !_showPath;
+            GD.Print($"Path visualization: {(_showPath ? "ON" : "OFF")}");
+            if (!_showPath)
+                ClearPathVisualization();
+            else
+                RebuildPathVisualization();
+        }
     }
 
     /// <summary>
@@ -98,6 +140,7 @@ public partial class Colonist : CharacterBody3D
         {
             _state = State.Walking;
             GD.Print($"Colonist: Walking, {_waypoints.Count} waypoints");
+            RebuildPathVisualization();
         }
     }
 
@@ -296,6 +339,54 @@ public partial class Colonist : CharacterBody3D
         {
             GD.Print($"Colonist: {_state} -> {newState} at ({Position.X:F1}, {Position.Y:F1}, {Position.Z:F1})");
             _state = newState;
+
+            if (newState == State.Idle)
+                ClearPathVisualization();
         }
+    }
+
+    private void RebuildPathVisualization()
+    {
+        if (_pathMesh == null || !_showPath) return;
+        if (_waypoints == null || _waypoints.Count < 2)
+        {
+            ClearPathVisualization();
+            return;
+        }
+
+        _pathMesh.ClearSurfaces();
+        _pathMesh.SurfaceBegin(Mesh.PrimitiveType.Lines);
+
+        // Draw lines between waypoints
+        for (int i = 0; i < _waypoints.Count - 1; i++)
+        {
+            var from = _waypoints[i].StandPosition + new Vector3(0, 0.1f, 0); // Slight Y offset to avoid z-fight
+            var to = _waypoints[i + 1].StandPosition + new Vector3(0, 0.1f, 0);
+            _pathMesh.SurfaceAddVertex(from);
+            _pathMesh.SurfaceAddVertex(to);
+        }
+
+        _pathMesh.SurfaceEnd();
+
+        // Also draw small markers at each waypoint using a second surface
+        _pathMesh.SurfaceBegin(Mesh.PrimitiveType.Lines);
+        float markerSize = 0.15f;
+        for (int i = 0; i < _waypoints.Count; i++)
+        {
+            var center = _waypoints[i].StandPosition + new Vector3(0, 0.1f, 0);
+            // Small cross at each waypoint
+            _pathMesh.SurfaceAddVertex(center + new Vector3(-markerSize, 0, 0));
+            _pathMesh.SurfaceAddVertex(center + new Vector3(markerSize, 0, 0));
+            _pathMesh.SurfaceAddVertex(center + new Vector3(0, 0, -markerSize));
+            _pathMesh.SurfaceAddVertex(center + new Vector3(0, 0, markerSize));
+            _pathMesh.SurfaceAddVertex(center + new Vector3(0, -markerSize, 0));
+            _pathMesh.SurfaceAddVertex(center + new Vector3(0, markerSize, 0));
+        }
+        _pathMesh.SurfaceEnd();
+    }
+
+    private void ClearPathVisualization()
+    {
+        _pathMesh?.ClearSurfaces();
     }
 }

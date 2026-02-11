@@ -137,7 +137,7 @@ public static class ChunkMeshGenerator
             arrays[(int)Mesh.ArrayType.Normal] = normals.ToArray();
             arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
 
-            mesh.AddSurface(Mesh.PrimitiveType.Triangles, arrays);
+            mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
 
             // Set material for this surface
             var material = new StandardMaterial3D();

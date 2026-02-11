@@ -38,9 +38,23 @@ public partial class Main : Node3D
 
     private void SetupWorld()
     {
+        // In editor, remove any previously-created World to avoid duplicates on re-run
+        if (Engine.IsEditorHint())
+        {
+            var existing = GetNodeOrNull<World>("World");
+            if (existing != null)
+            {
+                RemoveChild(existing);
+                existing.QueueFree();
+            }
+        }
+
         _world = new World();
         _world.Name = "World";
         AddChild(_world);
+
+        if (Engine.IsEditorHint())
+            _world.Owner = GetTree().EditedSceneRoot;
 
         // Load a 3x3 grid of chunks centered at origin
         _world.LoadChunkArea(Vector3I.Zero, 1);

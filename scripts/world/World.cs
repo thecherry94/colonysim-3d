@@ -98,6 +98,8 @@ public partial class World : Node3D
     {
         var chunk = new Chunk();
         AddChild(chunk);
+        if (Engine.IsEditorHint())
+            chunk.Owner = GetTree().EditedSceneRoot;
         chunk.Initialize(chunkCoord);
         _chunks[chunkCoord] = chunk;
 
