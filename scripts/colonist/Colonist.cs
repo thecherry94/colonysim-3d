@@ -105,10 +105,26 @@ public partial class Colonist : CharacterBody3D
     {
         float dt = (float)delta;
 
+        // Void safety: if fallen below the world, teleport back to spawn
+        if (Position.Y < -20)
+        {
+            GD.Print($"Colonist: fell into void at {Position}, resetting to spawn");
+            Position = new Vector3(8, 15, 8);
+            Velocity = Vector3.Zero;
+            _waypoints = null;
+            _state = State.Idle;
+            return;
+        }
+
         switch (_state)
         {
             case State.Idle:
-                ApplyGravity(dt);
+                // Zero horizontal velocity when idle so we don't drift off edges
+                var idleVel = Velocity;
+                idleVel.X = 0;
+                idleVel.Z = 0;
+                if (!IsOnFloor()) idleVel.Y -= Gravity * dt;
+                Velocity = idleVel;
                 MoveAndSlide();
                 break;
 
