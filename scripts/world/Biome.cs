@@ -24,9 +24,11 @@ public readonly struct BiomeData
     public readonly float BaseHeightOffset;
     public readonly float AmplitudeScale;
     public readonly float DetailScale;
+    public readonly float TreeDensity;
 
     public BiomeData(BlockType surface, BlockType subSurface, BlockType underwater,
-                     float heightOffset, float ampScale, float detailScale)
+                     float heightOffset, float ampScale, float detailScale,
+                     float treeDensity = 0f)
     {
         SurfaceBlock = surface;
         SubSurfaceBlock = subSurface;
@@ -34,6 +36,7 @@ public readonly struct BiomeData
         BaseHeightOffset = heightOffset;
         AmplitudeScale = ampScale;
         DetailScale = detailScale;
+        TreeDensity = treeDensity;
     }
 }
 
@@ -44,12 +47,12 @@ public static class BiomeTable
 {
     public static readonly BiomeData[] Biomes = new BiomeData[]
     {
-        //                  Surface          SubSurface       Underwater       HeightOff  Amp   Detail
-        new BiomeData(BlockType.Grass,   BlockType.Dirt,  BlockType.Sand,     0f,  0.3f, 0.2f),  // Grassland (flat plains)
-        new BiomeData(BlockType.Grass,   BlockType.Dirt,  BlockType.Sand,     2f,  0.8f, 1.0f),  // Forest (gentle hills)
-        new BiomeData(BlockType.RedSand, BlockType.Sand,  BlockType.Sand,    -2f,  0.4f, 0.2f),  // Desert (flat dunes)
-        new BiomeData(BlockType.Snow,    BlockType.Dirt,  BlockType.Gravel,  -1f,  0.5f, 0.3f),  // Tundra (gently rolling)
-        new BiomeData(BlockType.Grass,   BlockType.Clay,  BlockType.Clay,    -4f,  0.2f, 0.1f),  // Swamp (very flat, low)
-        new BiomeData(BlockType.Stone,   BlockType.Stone, BlockType.Gravel,   8f,  1.8f, 1.5f),  // Mountains (steep)
+        //                  Surface          SubSurface       Underwater       HeightOff  Amp   Detail  Trees
+        new BiomeData(BlockType.Grass,   BlockType.Dirt,  BlockType.Sand,     0f,  0.3f, 0.2f, 0.05f),  // Grassland (scattered trees)
+        new BiomeData(BlockType.Grass,   BlockType.Dirt,  BlockType.Sand,     2f,  0.8f, 1.0f, 0.30f),  // Forest (dense trees)
+        new BiomeData(BlockType.RedSand, BlockType.Sand,  BlockType.Sand,    -2f,  0.4f, 0.2f, 0.00f),  // Desert (no trees)
+        new BiomeData(BlockType.Snow,    BlockType.Dirt,  BlockType.Gravel,  -1f,  0.5f, 0.3f, 0.01f),  // Tundra (very rare trees)
+        new BiomeData(BlockType.Grass,   BlockType.Clay,  BlockType.Clay,    -4f,  0.2f, 0.1f, 0.15f),  // Swamp (moderate trees)
+        new BiomeData(BlockType.Stone,   BlockType.Stone, BlockType.Gravel,   8f,  1.8f, 1.5f, 0.02f),  // Mountains (rare trees)
     };
 }

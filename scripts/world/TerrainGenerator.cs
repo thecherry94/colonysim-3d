@@ -22,6 +22,7 @@ public class TerrainGenerator
     private readonly FastNoiseLite _riverNoise;
     private readonly FastNoiseLite _temperatureNoise;
     private readonly FastNoiseLite _moistureNoise;
+    private readonly int _seed;
 
     public const int WaterLevel = 25;
     public const int MaxHeight = 62;
@@ -65,6 +66,8 @@ public class TerrainGenerator
 
     public TerrainGenerator(int seed = 42)
     {
+        _seed = seed;
+
         // Layer 1 — Continentalness: very low frequency for broad terrain categories
         _continentalNoise = new FastNoiseLite();
         _continentalNoise.Seed = seed;
@@ -116,7 +119,7 @@ public class TerrainGenerator
         _moistureNoise.FractalType = FastNoiseLite.FractalTypeEnum.Fbm;
         _moistureNoise.FractalOctaves = 2;
 
-        GD.Print($"TerrainGenerator initialized: seed={seed}, waterLevel={WaterLevel}, maxHeight={MaxHeight}, biomes=6");
+        GD.Print($"TerrainGenerator initialized: seed={seed}, waterLevel={WaterLevel}, maxHeight={MaxHeight}, biomes=6, treeGrid={TreeGenerator.TreeGridSize}");
     }
 
     /// <summary>
@@ -320,6 +323,62 @@ public class TerrainGenerator
                 }
             }
         }
+
+        // Phase 2: Tree placement via deterministic grid cells.
+        // Check all cells that could have trees reaching into this chunk.
+        PlaceTreesInChunk(blocks, chunkCoord);
+    }
+
+    /// <summary>
+    /// Place trees in the chunk by checking all grid cells whose trees could
+    /// overlap this chunk's bounds (including trees rooted in neighboring chunks).
+    /// </summary>
+    private void PlaceTreesInChunk(BlockType[,,] blocks, Vector3I chunkCoord)
+    {
+        int border = TreeGenerator.TreeInfluenceRadius;
+        int chunkMinX = chunkCoord.X * Chunk.SIZE;
+        int chunkMinZ = chunkCoord.Z * Chunk.SIZE;
+        int chunkMinY = chunkCoord.Y * Chunk.SIZE;
+
+        // Compute which grid cells could have trees affecting this chunk
+        int minCellX = FloorDiv(chunkMinX - border, TreeGenerator.TreeGridSize);
+        int maxCellX = FloorDiv(chunkMinX + Chunk.SIZE - 1 + border, TreeGenerator.TreeGridSize);
+        int minCellZ = FloorDiv(chunkMinZ - border, TreeGenerator.TreeGridSize);
+        int maxCellZ = FloorDiv(chunkMinZ + Chunk.SIZE - 1 + border, TreeGenerator.TreeGridSize);
+
+        for (int cellX = minCellX; cellX <= maxCellX; cellX++)
+        for (int cellZ = minCellZ; cellZ <= maxCellZ; cellZ++)
+        {
+            // First check: does this cell have a tree at max density?
+            // We use density=1.0 here to get the position, then check biome density below.
+            if (!TreeGenerator.TryGetTreeInCell(cellX, cellZ, _seed, 1.0f, out int treeX, out int treeZ))
+                continue;
+
+            // Sample biome at tree position to get actual density
+            var treeSample = SampleColumn(treeX, treeZ);
+            BiomeType treeBiome = ClassifyBiome(treeSample.TNorm, treeSample.MNorm, treeSample.CNorm);
+            float density = BiomeTable.Biomes[(int)treeBiome].TreeDensity;
+
+            // Now check if the cell's hash actually passes the biome's density threshold
+            if (!TreeGenerator.TryGetTreeInCell(cellX, cellZ, _seed, density, out _, out _))
+                continue;
+
+            int surfaceY = ComputeHeight(treeSample);
+
+            // Skip trees in water, on beaches, or in river channels
+            if (surfaceY <= WaterLevel + 2) continue;
+
+            TreeGenerator.PlaceTreeBlocks(treeX, treeZ, surfaceY, _seed, blocks,
+                                           chunkMinX, chunkMinY, chunkMinZ);
+        }
+    }
+
+    /// <summary>
+    /// Integer floor division (rounds toward negative infinity).
+    /// </summary>
+    private static int FloorDiv(int a, int b)
+    {
+        return a >= 0 ? a / b : (a - b + 1) / b;
     }
 
     /// <summary>

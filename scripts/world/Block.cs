@@ -19,6 +19,8 @@ public enum BlockType : byte
     Ice = 8,
     RedSand = 9,
     Clay = 10,
+    Wood = 11,
+    Leaves = 12,
 }
 
 /// <summary>
@@ -41,6 +43,8 @@ public static class BlockData
         BlockType.Ice => new Color(0.70f, 0.85f, 0.95f),
         BlockType.RedSand => new Color(0.82f, 0.52f, 0.28f),
         BlockType.Clay => new Color(0.65f, 0.50f, 0.38f),
+        BlockType.Wood => new Color(0.55f, 0.35f, 0.18f),
+        BlockType.Leaves => new Color(0.20f, 0.55f, 0.15f),
         _ => Colors.Transparent,
     };
 
