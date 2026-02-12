@@ -109,21 +109,26 @@ Add **stuck detection**: if the colonist makes no progress for ~2 seconds, clear
 
 ### 3.5 Chunk Streaming & Threaded Generation
 
-Chunks load/unload dynamically based on camera position with a **three-phase pipeline**:
+Chunks load/unload dynamically based on camera position with a **three-phase pipeline** inside `ProcessLoadQueue()`:
 
-**Phase 1 — Background terrain generation:** `Task.Run()` dispatches `TerrainGenerator.GenerateChunkBlocks()` to the .NET thread pool. Results (raw `BlockType[,,]` arrays) are collected in a `ConcurrentQueue<ChunkGenResult>`. Up to `MaxConcurrentGens` (8, or 32 during large queue bursts) chunks generate concurrently. Modified chunk cache is checked on the main thread before dispatch.
+**Phase 1 — Apply terrain results (budgeted):** Background threads post completed `ChunkGenResult` structs to a `ConcurrentQueue`. Phase 1 dequeues these, creates Godot scene nodes (`Chunk` + `MeshInstance3D` + `StaticBody3D` + `CollisionShape3D`), and queues the chunk + its 6 neighbors for mesh generation. Budgeted to `MaxApplyPerFrame` (16) to prevent frame spikes when many results arrive at once. Overflow results are re-enqueued for the next frame.
 
-**Phase 2 — Budgeted main-thread mesh generation:** Greedy meshing (`GenerateMeshData()`) runs on the main thread with correct neighbor data via `MakeNeighborCallback()`. Budgeted to `MaxMeshPerFrame` (4) chunks per frame to avoid stutter. When a chunk's terrain is applied, it and its 6 face-adjacent neighbors are queued for mesh generation (dedup via `_meshQueueSet`).
+**Phase 2 — Time-budgeted mesh generation:** Greedy meshing (`GenerateMeshData()`) runs on the main thread with correct neighbor data via `MakeNeighborCallback()`. Uses a **wall-clock time budget** (`MeshTimeBudgetMs = 4.0`) via `Stopwatch.GetTimestamp()` instead of a fixed chunk count. This adapts to hardware speed — fast PCs mesh more chunks per frame, slow PCs mesh fewer, both maintaining smooth frame rates.
 
-**Phase 3 — Dispatch:** New chunks are dequeued from the load queue and dispatched to background threads.
+**Phase 3 — Dispatch terrain generation:** New chunks are dequeued from the load queue. Modified chunk cache and terrain prefetch cache are checked first (instant restore). Otherwise, `Task.Run()` dispatches `TerrainGenerator.GenerateChunkBlocks()` to the .NET thread pool. Up to `MaxConcurrentGens` (8, or 32 during large queue bursts) chunks generate concurrently.
+
+**Terrain prefetch ring:** `DispatchPrefetch()` pre-generates terrain for chunks within `renderRadius + PrefetchRingWidth` (3) but beyond render distance. Results are stored in a `ConcurrentDictionary<Vector3I, BlockType[,,]>` terrain cache. When the camera pans and these chunks enter render distance, their terrain data is instantly available — no thread pool wait. Up to 8 prefetches dispatched per frame. Stale cache entries and in-flight prefetches are evicted when the camera moves away.
+
+**Empty chunk optimization:** Chunks that are 100% air (typically upper Y layers above terrain) are tracked in a lightweight `HashSet<Vector3I>` instead of creating Godot scene nodes. This eliminates ~50% of node creation overhead since half the Y layers are usually empty sky. Empty status is detected both from background terrain gen results and prefetch cache checks.
 
 **Other details:**
 - `Main._Process()` converts camera position to chunk XZ coordinate each frame, calls `World.UpdateLoadedChunks()`
 - Chunks unload when their XZ distance from camera exceeds `radius + 2` (hysteresis prevents thrashing at boundaries)
 - In-flight background generation is cancelled for chunks that move out of range (`_unloadedWhileGenerating` set)
+- `QueueNeighborMeshes()` helper deduplicates the pattern of queuing 6 face-adjacent neighbors for mesh regeneration
 - Editor mode still uses synchronous `LoadChunkArea()` for immediate preview
 
-**Why mesh generation stays on the main thread:** Greedy meshing needs correct neighbor data for cross-chunk face culling. When chunks load in waves, neighbors don't exist yet during the initial loading burst. Attempting background mesh gen with placeholder Air neighbors causes grid-pattern artifacts at chunk boundaries (every boundary face renders). Snapshotting neighbor boundary slices also fails because neighbors haven't been generated yet. The budgeted main-thread approach guarantees correct neighbor data while spreading the cost over frames.
+**Why mesh generation stays on the main thread:** Greedy meshing needs correct neighbor data for cross-chunk face culling. When chunks load in waves, neighbors don't exist yet during the initial loading burst. Attempting background mesh gen with placeholder Air neighbors causes grid-pattern artifacts at chunk boundaries (every boundary face renders). Snapshotting neighbor boundary slices also fails because neighbors haven't been generated yet. The time-budgeted main-thread approach guarantees correct neighbor data while adapting to hardware speed.
 
 ### 3.6 Dirty Chunk Caching
 
@@ -283,6 +288,7 @@ When the game runs, it loads the pre-baked collision shapes from the scene AND c
 | 14 | Biome system (6 biomes, temperature/moisture noise, height blending) | Done |
 | 15 | Greedy meshing (Mikola Lysenko algorithm, up to 256× triangle reduction) | Done |
 | 16 | Threaded chunk generation (background terrain gen, budgeted main-thread mesh) | Done |
+| 17 | Streaming optimizations (terrain prefetch, empty chunk skip, time-budgeted mesh) | Done |
 
 ### Future Phases (not yet planned in detail):
 - Multiple colonists
@@ -356,6 +362,10 @@ colonysim-3d/
 13. **Do NOT create Godot objects on background threads.** `new Chunk()`, `AddChild()`, `ArrayMesh`, `StandardMaterial3D`, etc. must all be created on the main thread. Background threads should only compute raw data (block arrays, vertex arrays) and enqueue results for the main thread to apply.
 
 14. **`[ThreadStatic]` buffers need lazy initialization.** `[ThreadStatic]` fields are per-thread but NOT initialized on new threads — they default to null/zero. Always check and initialize before use (e.g., `_sliceMask ??= new BlockType[256]`).
+
+15. **Use time budgets, not fixed counts, for per-frame work.** A fixed "N chunks per frame" is either too few on fast hardware or too many on slow hardware. Use `Stopwatch.GetTimestamp()` with a wall-clock millisecond budget (e.g., 4ms) so the system adapts automatically. This applies to any expensive per-frame loop (mesh gen, node creation, etc.).
+
+16. **Skip empty chunks entirely.** Upper Y layers are almost always 100% air. Tracking them in a `HashSet<Vector3I>` instead of creating full Godot node hierarchies (`Chunk` → `MeshInstance3D` → `StaticBody3D` → `CollisionShape3D`) eliminates ~50% of scene tree overhead during streaming.
 
 ---
 
