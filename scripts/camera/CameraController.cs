@@ -102,17 +102,24 @@ public partial class CameraController : Node3D
 
     private void ProcessEdgePan(float dt)
     {
+        // Don't edge-pan when window doesn't have focus (mouse is outside)
+        if (!GetWindow().HasFocus()) return;
+
         var viewport = GetViewport();
         if (viewport == null) return;
         var mousePos = viewport.GetMousePosition();
         var size = viewport.GetVisibleRect().Size;
 
+        // Ignore if mouse is outside the viewport bounds
+        if (mousePos.X < 0 || mousePos.X > size.X || mousePos.Y < 0 || mousePos.Y > size.Y)
+            return;
+
         var input = Vector2.Zero;
 
         if (mousePos.X < EdgePanMargin) input.X -= 1;
         if (mousePos.X > size.X - EdgePanMargin) input.X += 1;
-        if (mousePos.Y < EdgePanMargin) input.Y -= 1;
-        if (mousePos.Y > size.Y - EdgePanMargin) input.Y += 1;
+        if (mousePos.Y < EdgePanMargin) input.Y += 1;  // Top of screen = forward
+        if (mousePos.Y > size.Y - EdgePanMargin) input.Y -= 1;  // Bottom = backward
 
         if (input == Vector2.Zero) return;
 
