@@ -1,16 +1,18 @@
 namespace ColonySim;
 
+using System;
 using Godot;
 
 /// <summary>
-/// Multi-layer noise terrain generator with vertical chunk support.
-/// 4 noise layers create diverse terrain: flat valleys, rolling hills, mountains, and rivers.
-/// Heights span 0-62 across multiple Y chunk layers (default 4 layers = 64 blocks tall).
+/// Multi-layer noise terrain generator with biome support.
+/// 6 noise layers create diverse biome-aware terrain with seamless transitions.
 ///
-/// Layer 1 — Continentalness (freq 0.003): large-scale terrain category (lowland/midland/highland)
-/// Layer 2 — Elevation (freq 0.01): primary height variation, amplitude scaled by continentalness
-/// Layer 3 — Detail (freq 0.06): surface roughness, suppressed in flat areas
+/// Layer 1 — Continentalness (freq 0.003): large-scale terrain category
+/// Layer 2 — Elevation (freq 0.01): primary height variation
+/// Layer 3 — Detail (freq 0.06): surface roughness
 /// Layer 4 — River (freq 0.005): rivers form where abs(noise) ≈ 0
+/// Layer 5 — Temperature (freq 0.002): climate zones (cold ↔ hot)
+/// Layer 6 — Moisture (freq 0.0025): wet/dry variation
 /// </summary>
 public class TerrainGenerator
 {
@@ -18,16 +20,52 @@ public class TerrainGenerator
     private readonly FastNoiseLite _elevationNoise;
     private readonly FastNoiseLite _detailNoise;
     private readonly FastNoiseLite _riverNoise;
+    private readonly FastNoiseLite _temperatureNoise;
+    private readonly FastNoiseLite _moistureNoise;
 
     public const int WaterLevel = 25;
     public const int MaxHeight = 62;
     private const float RiverWidth = 0.04f;
     private const float RiverBankWidth = 0.08f;
 
+    // Biome blending: Gaussian weight sharpness. Higher = sharper biome borders.
+    private const float BlendSharpness = 4.0f;
+
+    // Biome center positions in (temperature, moisture, continentalness) noise space [0,1].
+    private static readonly (float t, float m, float c)[] BiomeCenters =
+    {
+        (0.50f, 0.50f, 0.35f),  // Grassland: mid everything
+        (0.50f, 0.80f, 0.35f),  // Forest: mid temp, wet
+        (0.80f, 0.15f, 0.35f),  // Desert: hot, dry
+        (0.15f, 0.50f, 0.35f),  // Tundra: cold
+        (0.80f, 0.80f, 0.35f),  // Swamp: hot, wet
+        (0.50f, 0.50f, 0.85f),  // Mountains: high continentalness
+    };
+
+    /// <summary>
+    /// All noise values sampled once per XZ column to avoid redundant noise calls.
+    /// </summary>
+    private readonly struct ColumnSample
+    {
+        public readonly float Continental, Elevation, Detail, River;
+        public readonly float CNorm, TNorm, MNorm;
+
+        public ColumnSample(float continental, float elevation, float detail, float river,
+                            float cNorm, float tNorm, float mNorm)
+        {
+            Continental = continental;
+            Elevation = elevation;
+            Detail = detail;
+            River = river;
+            CNorm = cNorm;
+            TNorm = tNorm;
+            MNorm = mNorm;
+        }
+    }
+
     public TerrainGenerator(int seed = 42)
     {
         // Layer 1 — Continentalness: very low frequency for broad terrain categories
-        // One full transition per ~333 blocks
         _continentalNoise = new FastNoiseLite();
         _continentalNoise.Seed = seed;
         _continentalNoise.NoiseType = FastNoiseLite.NoiseTypeEnum.SimplexSmooth;
@@ -62,95 +100,179 @@ public class TerrainGenerator
         _riverNoise.Frequency = 0.005f;
         _riverNoise.FractalType = FastNoiseLite.FractalTypeEnum.None;
 
-        GD.Print($"TerrainGenerator initialized: seed={seed}, waterLevel={WaterLevel}, maxHeight={MaxHeight}");
+        // Layer 5 — Temperature: broad climate zones
+        _temperatureNoise = new FastNoiseLite();
+        _temperatureNoise.Seed = seed + 400;
+        _temperatureNoise.NoiseType = FastNoiseLite.NoiseTypeEnum.SimplexSmooth;
+        _temperatureNoise.Frequency = 0.002f;
+        _temperatureNoise.FractalType = FastNoiseLite.FractalTypeEnum.Fbm;
+        _temperatureNoise.FractalOctaves = 2;
+
+        // Layer 6 — Moisture: wet/dry variation
+        _moistureNoise = new FastNoiseLite();
+        _moistureNoise.Seed = seed + 500;
+        _moistureNoise.NoiseType = FastNoiseLite.NoiseTypeEnum.SimplexSmooth;
+        _moistureNoise.Frequency = 0.0025f;
+        _moistureNoise.FractalType = FastNoiseLite.FractalTypeEnum.Fbm;
+        _moistureNoise.FractalOctaves = 2;
+
+        GD.Print($"TerrainGenerator initialized: seed={seed}, waterLevel={WaterLevel}, maxHeight={MaxHeight}, biomes=6");
     }
 
     /// <summary>
-    /// Returns the surface height at the given world X/Z coordinate.
-    /// Height is computed from continentalness-scaled elevation + detail noise.
-    /// Rivers carve into the terrain where river noise ≈ 0.
-    /// Returns a global Y coordinate (0-62), spanning multiple chunk layers.
+    /// Sample all 6 noise layers at a world XZ position, normalize to [0,1].
     /// </summary>
-    public int GetHeight(int worldX, int worldZ)
+    private ColumnSample SampleColumn(int worldX, int worldZ)
     {
-        // Sample all noise layers
         float continental = _continentalNoise.GetNoise2D(worldX, worldZ);
         float elevation = _elevationNoise.GetNoise2D(worldX, worldZ);
         float detail = _detailNoise.GetNoise2D(worldX, worldZ);
         float river = _riverNoise.GetNoise2D(worldX, worldZ);
+        float temp = _temperatureNoise.GetNoise2D(worldX, worldZ);
+        float moisture = _moistureNoise.GetNoise2D(worldX, worldZ);
 
-        // Remap continentalness from [-1,1] to [0,1]
-        float cNorm = (continental + 1.0f) * 0.5f;
-        float cSquared = cNorm * cNorm; // Squaring makes lowlands genuinely flat
+        return new ColumnSample(
+            continental, elevation, detail, river,
+            (continental + 1f) * 0.5f,
+            (temp + 1f) * 0.5f,
+            (moisture + 1f) * 0.5f
+        );
+    }
 
-        // Compute height with continentalness-scaled amplitude (scaled for 64-block range)
-        float baseHeight = Mathf.Lerp(22.0f, 40.0f, cSquared);
-        float amplitude = Mathf.Lerp(4.0f, 18.0f, cSquared);
-        float detailAmp = Mathf.Lerp(0.5f, 3.0f, cNorm);
+    /// <summary>
+    /// Classify which biome dominates at the given normalized noise coordinates.
+    /// Used for block type selection (hard threshold — not blended).
+    /// </summary>
+    private static BiomeType ClassifyBiome(float t, float m, float c)
+    {
+        if (c > 0.7f) return BiomeType.Mountains;
+        if (t < 0.35f) return BiomeType.Tundra;
+        if (t > 0.65f)
+        {
+            if (m < 0.35f) return BiomeType.Desert;
+            if (m > 0.65f) return BiomeType.Swamp;
+        }
+        if (m > 0.65f) return BiomeType.Forest;
+        return BiomeType.Grassland;
+    }
 
-        float rawHeight = baseHeight + elevation * amplitude + detail * detailAmp;
+    /// <summary>
+    /// Public biome query for external use (World.GetBiome pass-through).
+    /// </summary>
+    public BiomeType GetBiome(int worldX, int worldZ)
+    {
+        float c = (_continentalNoise.GetNoise2D(worldX, worldZ) + 1f) * 0.5f;
+        float t = (_temperatureNoise.GetNoise2D(worldX, worldZ) + 1f) * 0.5f;
+        float m = (_moistureNoise.GetNoise2D(worldX, worldZ) + 1f) * 0.5f;
+        return ClassifyBiome(t, m, c);
+    }
+
+    /// <summary>
+    /// Compute blended height parameters using Gaussian weights in noise space.
+    /// Each biome contributes based on proximity to its center in (t, m, c) space.
+    /// This prevents cliff walls at biome boundaries.
+    /// </summary>
+    private static void ComputeBlendedParams(float t, float m, float c,
+        out float heightOffset, out float ampScale, out float detScale)
+    {
+        Span<float> weights = stackalloc float[6];
+        float totalWeight = 0f;
+
+        for (int i = 0; i < 6; i++)
+        {
+            float dt = t - BiomeCenters[i].t;
+            float dm = m - BiomeCenters[i].m;
+            float dc = (c - BiomeCenters[i].c) * 2f; // Continental axis weighted more
+            float distSq = dt * dt + dm * dm + dc * dc;
+            weights[i] = Mathf.Exp(-BlendSharpness * distSq);
+            totalWeight += weights[i];
+        }
+
+        heightOffset = 0f;
+        ampScale = 0f;
+        detScale = 0f;
+
+        for (int i = 0; i < 6; i++)
+        {
+            float w = weights[i] / totalWeight;
+            heightOffset += BiomeTable.Biomes[i].BaseHeightOffset * w;
+            ampScale += BiomeTable.Biomes[i].AmplitudeScale * w;
+            detScale += BiomeTable.Biomes[i].DetailScale * w;
+        }
+    }
+
+    /// <summary>
+    /// Compute surface height from a pre-sampled column.
+    /// Uses blended biome parameters for seamless transitions.
+    /// </summary>
+    private int ComputeHeight(in ColumnSample s)
+    {
+        float cSquared = s.CNorm * s.CNorm;
+
+        // Get blended biome height modifiers
+        ComputeBlendedParams(s.TNorm, s.MNorm, s.CNorm,
+            out float heightOffset, out float ampScale, out float detScale);
+
+        // Base height from continentalness + biome offset
+        float baseHeight = Mathf.Lerp(22.0f, 40.0f, cSquared) + heightOffset;
+        float amplitude = Mathf.Lerp(4.0f, 18.0f, cSquared) * ampScale;
+        float detailAmp = Mathf.Lerp(0.5f, 3.0f, s.CNorm) * detScale;
+
+        float rawHeight = baseHeight + s.Elevation * amplitude + s.Detail * detailAmp;
 
         // River carving: only where terrain is above water and not mountainous
-        // Skip if terrain is already at or below water level (lakes/oceans) —
-        // carving a river through a lake creates artificial land barriers
-        if (continental <= 0.5f && rawHeight > WaterLevel + 1)
+        if (s.Continental <= 0.5f && rawHeight > WaterLevel + 1)
         {
-            float absRiver = Mathf.Abs(river);
+            float absRiver = Mathf.Abs(s.River);
             if (absRiver < RiverWidth)
             {
-                // River center: carve down to water level - 1
                 rawHeight = WaterLevel - 1;
             }
             else if (absRiver < RiverBankWidth)
             {
-                // River banks: smooth slope from terrain to water edge
                 float t = (absRiver - RiverWidth) / (RiverBankWidth - RiverWidth);
-                t = t * t; // Ease-in for smoother bank slopes
+                t = t * t;
                 rawHeight = Mathf.Lerp(WaterLevel, rawHeight, t);
             }
         }
 
-        int height = Mathf.RoundToInt(rawHeight);
-        return Mathf.Clamp(height, 2, MaxHeight);
+        return Mathf.Clamp(Mathf.RoundToInt(rawHeight), 2, MaxHeight);
     }
 
     /// <summary>
-    /// Returns the continentalness value at a given world X/Z coordinate.
-    /// Used for block type decisions (mountain peaks get stone surface, etc.)
+    /// Returns the surface height at the given world X/Z coordinate.
+    /// Public API used by World.GetSurfaceHeight() for camera/colonist positioning.
     /// </summary>
-    private float GetContinentalness(int worldX, int worldZ)
+    public int GetHeight(int worldX, int worldZ)
     {
-        return _continentalNoise.GetNoise2D(worldX, worldZ);
+        var sample = SampleColumn(worldX, worldZ);
+        return ComputeHeight(sample);
     }
 
     /// <summary>
     /// Returns true if this position is in a river channel.
-    /// Only true where terrain is naturally above water level (not in lakes).
     /// </summary>
-    private bool IsRiverChannel(int worldX, int worldZ)
+    private bool IsRiverChannel(in ColumnSample s, int surfaceHeight)
     {
-        float continental = _continentalNoise.GetNoise2D(worldX, worldZ);
-        if (continental > 0.5f) return false; // No rivers on mountains
+        if (s.Continental > 0.5f) return false;
+        if (Mathf.Abs(s.River) >= RiverWidth) return false;
 
-        float river = _riverNoise.GetNoise2D(worldX, worldZ);
-        if (Mathf.Abs(river) >= RiverWidth) return false;
-
-        // Check if terrain is naturally above water (before river carving)
-        float elevation = _elevationNoise.GetNoise2D(worldX, worldZ);
-        float detail = _detailNoise.GetNoise2D(worldX, worldZ);
-        float cNorm = (continental + 1.0f) * 0.5f;
-        float cSquared = cNorm * cNorm;
-        float baseH = Mathf.Lerp(22.0f, 40.0f, cSquared);
-        float amp = Mathf.Lerp(4.0f, 18.0f, cSquared);
-        float detAmp = Mathf.Lerp(0.5f, 3.0f, cNorm);
-        float naturalHeight = baseH + elevation * amp + detail * detAmp;
+        // Check if terrain would naturally be above water (before river carving).
+        // Recompute height without river carving.
+        float cSquared = s.CNorm * s.CNorm;
+        ComputeBlendedParams(s.TNorm, s.MNorm, s.CNorm,
+            out float heightOffset, out float ampScale, out float detScale);
+        float baseH = Mathf.Lerp(22.0f, 40.0f, cSquared) + heightOffset;
+        float amp = Mathf.Lerp(4.0f, 18.0f, cSquared) * ampScale;
+        float detAmp = Mathf.Lerp(0.5f, 3.0f, s.CNorm) * detScale;
+        float naturalHeight = baseH + s.Elevation * amp + s.Detail * detAmp;
 
         return naturalHeight > WaterLevel + 1;
     }
 
     /// <summary>
-    /// Fill a chunk's block array based on multi-layer noise terrain.
-    /// Supports any Y chunk layer — uses global world Y to determine block type.
+    /// Fill a chunk's block array based on biome-aware terrain.
+    /// Samples all noise once per XZ column for performance.
     /// </summary>
     public void GenerateChunkBlocks(BlockType[,,] blocks, Vector3I chunkCoord)
     {
@@ -161,9 +283,11 @@ public class TerrainGenerator
         {
             int worldX = chunkCoord.X * Chunk.SIZE + lx;
             int worldZ = chunkCoord.Z * Chunk.SIZE + lz;
-            int surfaceHeight = GetHeight(worldX, worldZ);
-            float continental = GetContinentalness(worldX, worldZ);
-            bool inRiver = IsRiverChannel(worldX, worldZ);
+
+            var sample = SampleColumn(worldX, worldZ);
+            int surfaceHeight = ComputeHeight(sample);
+            BiomeType biome = ClassifyBiome(sample.TNorm, sample.MNorm, sample.CNorm);
+            bool inRiver = IsRiverChannel(sample, surfaceHeight);
 
             for (int ly = 0; ly < Chunk.SIZE; ly++)
             {
@@ -171,27 +295,27 @@ public class TerrainGenerator
 
                 if (worldY > surfaceHeight && worldY > WaterLevel)
                 {
-                    // Above both terrain and water → Air (default, skip)
-                    continue;
+                    continue; // Air
                 }
                 else if (worldY > surfaceHeight && worldY <= WaterLevel)
                 {
-                    // Above terrain but at or below water level → Water
-                    blocks[lx, ly, lz] = BlockType.Water;
+                    // Above terrain but at/below water level
+                    // Tundra: freeze the water surface
+                    if (biome == BiomeType.Tundra && worldY == WaterLevel)
+                        blocks[lx, ly, lz] = BlockType.Ice;
+                    else
+                        blocks[lx, ly, lz] = BlockType.Water;
                 }
                 else if (worldY == surfaceHeight)
                 {
-                    // Surface block
-                    blocks[lx, ly, lz] = GetSurfaceBlock(surfaceHeight, continental, inRiver);
+                    blocks[lx, ly, lz] = GetSurfaceBlock(surfaceHeight, inRiver, biome);
                 }
                 else if (worldY >= surfaceHeight - 3)
                 {
-                    // Sub-surface (1-3 blocks below surface)
-                    blocks[lx, ly, lz] = GetSubSurfaceBlock(worldY, surfaceHeight, inRiver);
+                    blocks[lx, ly, lz] = GetSubSurfaceBlock(worldY, surfaceHeight, inRiver, biome);
                 }
                 else
                 {
-                    // Deep underground
                     blocks[lx, ly, lz] = BlockType.Stone;
                 }
             }
@@ -199,41 +323,40 @@ public class TerrainGenerator
     }
 
     /// <summary>
-    /// Determine the surface block type based on height, continentalness, and river proximity.
+    /// Determine surface block type based on height, river, and biome.
     /// </summary>
-    private BlockType GetSurfaceBlock(int surfaceHeight, float continental, bool inRiver)
+    private BlockType GetSurfaceBlock(int surfaceHeight, bool inRiver, BiomeType biome)
     {
+        var data = BiomeTable.Biomes[(int)biome];
+
         if (surfaceHeight < WaterLevel)
         {
             // Underwater surface
-            return inRiver ? BlockType.Gravel : BlockType.Sand;
+            return inRiver ? BlockType.Gravel : data.UnderwaterSurface;
         }
-        else if (surfaceHeight <= WaterLevel + 2)
+        if (surfaceHeight <= WaterLevel + 2)
         {
-            // Beach / water edge
+            // Beach / water edge — always Sand
             return BlockType.Sand;
         }
-        else if (continental > 0.6f && surfaceHeight >= 48)
-        {
-            // Mountain peak — bare stone
-            return BlockType.Stone;
-        }
-        else
-        {
-            return BlockType.Grass;
-        }
+        // Mountain snow caps
+        if (biome == BiomeType.Mountains && surfaceHeight >= 48)
+            return BlockType.Snow;
+
+        return data.SurfaceBlock;
     }
 
     /// <summary>
-    /// Determine the sub-surface block type (1-3 blocks below surface).
+    /// Determine sub-surface block type (1-3 blocks below surface).
     /// </summary>
-    private BlockType GetSubSurfaceBlock(int worldY, int surfaceHeight, bool inRiver)
+    private BlockType GetSubSurfaceBlock(int worldY, int surfaceHeight, bool inRiver, BiomeType biome)
     {
+        var data = BiomeTable.Biomes[(int)biome];
+
         if (worldY < WaterLevel && inRiver)
             return BlockType.Sand;
-        else if (surfaceHeight <= WaterLevel + 2)
+        if (surfaceHeight <= WaterLevel + 2)
             return BlockType.Sand; // Beach subsurface
-        else
-            return BlockType.Dirt;
+        return data.SubSurfaceBlock;
     }
 }

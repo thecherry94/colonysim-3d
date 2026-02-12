@@ -54,6 +54,15 @@ public partial class World : Node3D
     }
 
     /// <summary>
+    /// Returns the biome at a world X/Z coordinate.
+    /// </summary>
+    public BiomeType GetBiome(int worldX, int worldZ)
+    {
+        if (_terrainGenerator == null) return BiomeType.Grassland;
+        return _terrainGenerator.GetBiome(worldX, worldZ);
+    }
+
+    /// <summary>
     /// Convert world block coordinate to chunk coordinate.
     /// Uses floor division (not truncation) so negative coords work correctly.
     /// </summary>
