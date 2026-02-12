@@ -51,7 +51,8 @@ Why ArrayMesh works:
 - Full control over vertex/normal/index buffers
 - Can cull internal faces (only render block faces adjacent to air)
 - Chunk isolation: modifying one block only regenerates that chunk's mesh
-- Can extend to greedy meshing, texture atlases, LOD later
+- Greedy meshing merges adjacent same-type faces into larger rectangles (implemented)
+- Can extend to texture atlases, LOD later
 
 **Chunk size: 16x16x16 blocks.** This is a standard choice that balances mesh rebuild cost vs. chunk count.
 
@@ -106,14 +107,23 @@ Add **stuck detection**: if the colonist makes no progress for ~2 seconds, clear
 
 **Path visualization:** Red line + cross markers drawn via ImmediateMesh, toggled with F1. Added to scene root (world space, not colonist-local) with NoDepthTest for visibility.
 
-### 3.5 Chunk Streaming
+### 3.5 Chunk Streaming & Threaded Generation
 
-Chunks load/unload dynamically based on camera position:
+Chunks load/unload dynamically based on camera position with a **three-phase pipeline**:
+
+**Phase 1 — Background terrain generation:** `Task.Run()` dispatches `TerrainGenerator.GenerateChunkBlocks()` to the .NET thread pool. Results (raw `BlockType[,,]` arrays) are collected in a `ConcurrentQueue<ChunkGenResult>`. Up to `MaxConcurrentGens` (8, or 32 during large queue bursts) chunks generate concurrently. Modified chunk cache is checked on the main thread before dispatch.
+
+**Phase 2 — Budgeted main-thread mesh generation:** Greedy meshing (`GenerateMeshData()`) runs on the main thread with correct neighbor data via `MakeNeighborCallback()`. Budgeted to `MaxMeshPerFrame` (4) chunks per frame to avoid stutter. When a chunk's terrain is applied, it and its 6 face-adjacent neighbors are queued for mesh generation (dedup via `_meshQueueSet`).
+
+**Phase 3 — Dispatch:** New chunks are dequeued from the load queue and dispatched to background threads.
+
+**Other details:**
 - `Main._Process()` converts camera position to chunk XZ coordinate each frame, calls `World.UpdateLoadedChunks()`
-- New chunks are queued and loaded at a budget of **16 chunks per frame** (avoids frame stutter)
 - Chunks unload when their XZ distance from camera exceeds `radius + 2` (hysteresis prevents thrashing at boundaries)
-- After each batch of loads, meshes are regenerated for new chunks **plus their 6 face-adjacent neighbors** (cross-chunk face culling)
-- Initial startup still uses `LoadChunkArea()` for immediate bulk loading
+- In-flight background generation is cancelled for chunks that move out of range (`_unloadedWhileGenerating` set)
+- Editor mode still uses synchronous `LoadChunkArea()` for immediate preview
+
+**Why mesh generation stays on the main thread:** Greedy meshing needs correct neighbor data for cross-chunk face culling. When chunks load in waves, neighbors don't exist yet during the initial loading burst. Attempting background mesh gen with placeholder Air neighbors causes grid-pattern artifacts at chunk boundaries (every boundary face renders). Snapshotting neighbor boundary slices also fails because neighbors haven't been generated yet. The budgeted main-thread approach guarantees correct neighbor data while spreading the cost over frames.
 
 ### 3.6 Dirty Chunk Caching
 
@@ -127,21 +137,41 @@ This is an **in-memory cache only** — modifications are lost when the game res
 
 ### 3.7 Terrain Generation
 
-Multi-layer noise terrain using 4 `FastNoiseLite` layers:
+Multi-layer noise terrain using 5 `FastNoiseLite` layers:
 - **Continentalness** (freq 0.003): broad terrain category — lowlands, midlands, highlands
 - **Elevation** (freq 0.01): primary height variation, amplitude scaled by continentalness
 - **Detail** (freq 0.06): fine surface roughness, suppressed in flat areas
 - **River** (freq 0.005): rivers form where `abs(noise) ≈ 0`, only in non-mountainous terrain above water level
+- **Temperature** (freq 0.004) and **Moisture** (freq 0.005): drive biome classification
 
 Height range: 0-62 across multiple Y chunk layers (default 4 layers = 64 blocks tall). Water level: 25.
 
-Block types by position:
-- Mountain peaks (continental > 0.6, height >= 48): Stone surface
-- Beach (height <= water+2): Sand surface
-- Underwater: Sand (or Gravel in river channels)
-- Everything else: Grass surface, Dirt subsurface (3 layers), Stone deep
+**Biome system:** 6 biomes (Grassland, Forest, Desert, Tundra, Swamp, Mountains) selected by temperature, moisture, and continentalness. Each biome has distinct surface/subsurface blocks, height offsets, amplitude scales, and detail scales defined in `BiomeTable`. Biome boundaries use weighted blending of the 4 nearest biome heights (by Euclidean distance in temp/moisture space) to avoid hard terrain seams. See `Biome.cs` for definitions and `TerrainGenerator.cs` for blending logic.
 
-### 3.8 Why Build From Scratch (Not Use Existing Voxel Libraries)
+Block types by position:
+- Surface: determined by biome (`BiomeData.SurfaceBlock` — Grass, RedSand, Snow, Stone)
+- Subsurface (3 layers): determined by biome (`BiomeData.SubSurfaceBlock`)
+- Underwater: determined by biome (`BiomeData.UnderwaterSurface`)
+- Deep: Stone everywhere
+- Water fills from height down to water level
+
+### 3.8 Greedy Meshing
+
+The chunk mesh generator uses **greedy meshing** (Mikola Lysenko algorithm) to merge adjacent same-type block faces into larger rectangles, dramatically reducing triangle count.
+
+**How it works:** For each of 6 face directions, process 16 2D slices perpendicular to that direction. For each slice, build a 16×16 mask of which cells need a face (same culling rules as before). Then greedily merge: scan row-by-row, expand each unvisited cell rightward (same type), then downward (all cells match), emit one quad per merged rectangle.
+
+**Key implementation details:**
+- `FaceConfig` struct maps each face direction to its 2D slice coordinate system (depth/U/V axes)
+- `[ThreadStatic]` scratch buffers (`_sliceMask`, `_sliceVisited`) for thread-safe parallel generation
+- `GenerateMeshData()` returns thread-safe `ChunkMeshData` struct (raw arrays), `BuildArrayMesh()` creates Godot objects on main thread
+- Collision merges ALL solid types together (better merging than render path since no visual distinction)
+- One surface per block type in the render mesh (same material setup as before)
+- CW winding order preserved: verified for all 6 faces with w=1, h=1 matching original vertex positions
+
+**Performance:** Flat 16×16 surfaces reduce from 256 quads (512 triangles) to 1 quad (2 triangles) — up to 256× reduction. Typical terrain sees 5-10× overall triangle reduction.
+
+### 3.9 Why Build From Scratch (Not Use Existing Voxel Libraries)
 
 Evaluated options:
 - **Zylann's godot_voxel** (C++): Powerful but C# bindings are broken, and it's overkill for colony sim needs
@@ -210,7 +240,19 @@ When the game runs, it loads the pre-baked collision shapes from the scene AND c
 - The `[Tool]` attribute is useful for editor previews but creates this risk. All runtime node creation in `_Ready()` must be guarded with `if (!Engine.IsEditorHint())` where appropriate, OR the scene file must be kept clean.
 - If `MoveAndSlide()` produces zero movement despite valid velocity, check for overlapping collision shapes first.
 
-### 5.4 General Debugging Principles
+### 5.4 Background Mesh Generation Causes Chunk Boundary Artifacts
+
+**Problem:** After moving terrain generation to background threads, attempting to also move greedy meshing to background threads caused visible grid-pattern artifacts at chunk boundaries — especially on water surfaces. Every chunk boundary face was rendered, creating a wireframe grid effect.
+
+**Root cause:** Chunks load in waves. When a chunk is dispatched to a background thread, most of its 6 face-adjacent neighbors haven't been generated yet. Using `BlockType.Air` as a fallback for missing neighbors causes every boundary face to be treated as "exposed to air" and rendered.
+
+**Attempted fix:** Snapshotting neighbor boundary slices (copying the 16×16 boundary face of each loaded neighbor before dispatch). This also failed because during the initial loading burst, neighbors genuinely don't exist yet — the snapshots are mostly null/Air.
+
+**Correct solution:** Keep mesh generation on the main thread where all loaded chunks are accessible via `MakeNeighborCallback()`. Budget mesh generation to a few chunks per frame (4) to avoid stutter. Only terrain block generation (noise sampling) runs on background threads.
+
+**Lesson:** Thread-safe data access is not enough — the data must actually *exist* when you need it. In a chunk streaming system, neighbors load asynchronously and may not be available when a chunk first appears. Mesh generation that depends on neighbor state must wait until neighbors are loaded.
+
+### 5.5 General Debugging Principles
 
 1. **Understand the system before changing code.** Random trial-and-error on 6 cube faces with 4 vertices each produces chaos.
 2. **Don't accept workarounds that "look right."** Verify the fix is actually correct (check lighting, normals, physics behavior — not just visual appearance).
@@ -238,6 +280,9 @@ When the game runs, it loads the pre-baked collision shapes from the scene AND c
 | 11 | Vertical chunks (configurable Y layers, 64-block default height) | Done |
 | 12 | Chunk streaming (camera-based load/unload, 16/frame budget) | Done |
 | 13 | Dirty chunk caching (in-memory preservation of modified chunks) | Done |
+| 14 | Biome system (6 biomes, temperature/moisture noise, height blending) | Done |
+| 15 | Greedy meshing (Mikola Lysenko algorithm, up to 256× triangle reduction) | Done |
+| 16 | Threaded chunk generation (background terrain gen, budgeted main-thread mesh) | Done |
 
 ### Future Phases (not yet planned in detail):
 - Multiple colonists
@@ -245,7 +290,7 @@ When the game runs, it loads the pre-baked collision shapes from the scene AND c
 - Inventory and resource system (mined blocks become items)
 - Colonist needs (hunger, rest, mood)
 - More block types (wood, ore)
-- Better terrain (caves, overhangs, biomes, ore veins)
+- Better terrain (caves, overhangs, ore veins)
 - Selection system (click to select colonists, area designation)
 - Save/load system (disk persistence for modified chunks)
 - UI (menus, status panels, notifications)
@@ -264,8 +309,9 @@ colonysim-3d/
 │   ├── world/
 │   │   ├── World.cs                      # Chunk manager, streaming, dirty cache, block access
 │   │   ├── Chunk.cs                      # 16x16x16 block storage, mesh, collision, dirty flag
-│   │   ├── ChunkMeshGenerator.cs         # Procedural ArrayMesh from block data
-│   │   ├── TerrainGenerator.cs           # 4-layer FastNoiseLite terrain + rivers
+│   │   ├── ChunkMeshGenerator.cs         # Greedy meshing ArrayMesh + collision generation
+│   │   ├── TerrainGenerator.cs           # 5-layer FastNoiseLite terrain + biomes + rivers
+│   │   ├── Biome.cs                      # BiomeType enum, BiomeData struct, BiomeTable
 │   │   └── Block.cs                      # BlockType enum + BlockData utilities
 │   ├── navigation/
 │   │   ├── VoxelPathfinder.cs            # A* on voxel grid (8-connected, toggleable diagonals)
@@ -306,6 +352,10 @@ colonysim-3d/
 11. **Keep `main.tscn` minimal.** The `[Tool]` attribute causes the editor to serialize runtime nodes into the scene file. If the file grows beyond a few KB, it will break CharacterBody3D physics. See section 5.3.
 
 12. **Water is non-solid.** `BlockData.IsSolid()` returns false for Water (and Air). This means face culling treats water surfaces as exposed faces on adjacent solid blocks, and pathfinding won't route through water.
+
+13. **Do NOT create Godot objects on background threads.** `new Chunk()`, `AddChild()`, `ArrayMesh`, `StandardMaterial3D`, etc. must all be created on the main thread. Background threads should only compute raw data (block arrays, vertex arrays) and enqueue results for the main thread to apply.
+
+14. **`[ThreadStatic]` buffers need lazy initialization.** `[ThreadStatic]` fields are per-thread but NOT initialized on new threads — they default to null/zero. Always check and initialize before use (e.g., `_sliceMask ??= new BlockType[256]`).
 
 ---
 
