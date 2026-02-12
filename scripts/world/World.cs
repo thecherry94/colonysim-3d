@@ -16,6 +16,11 @@ public partial class World : Node3D
     private TerrainGenerator _terrainGenerator;
     private int _yChunkLayers = 4;
 
+    // Chunk streaming state
+    private Vector2I? _lastCameraChunkXZ;
+    private readonly Queue<Vector3I> _loadQueue = new();
+    private const int ChunksPerFrame = 16;
+
     /// <summary>
     /// Set the terrain generator externally (from Main, which owns the seed).
     /// Must be called before LoadChunkArea().
@@ -126,6 +131,94 @@ public partial class World : Node3D
 
         // After all chunks loaded, regenerate all meshes for cross-chunk face culling
         RegenerateAllMeshes();
+    }
+
+    /// <summary>
+    /// Stream chunks around the camera position. Call every frame from Main._Process().
+    /// Queues new chunks for loading and unloads distant ones.
+    /// </summary>
+    public void UpdateLoadedChunks(Vector2I cameraChunkXZ, int radius)
+    {
+        // Process any pending loads from the queue (budgeted per frame)
+        ProcessLoadQueue();
+
+        // Only recalculate desired chunks when camera moves to a new chunk
+        if (_lastCameraChunkXZ.HasValue && _lastCameraChunkXZ.Value == cameraChunkXZ)
+            return;
+
+        _lastCameraChunkXZ = cameraChunkXZ;
+
+        // Queue chunks that need loading
+        for (int x = cameraChunkXZ.X - radius; x <= cameraChunkXZ.X + radius; x++)
+        for (int z = cameraChunkXZ.Y - radius; z <= cameraChunkXZ.Y + radius; z++)
+        for (int y = 0; y < _yChunkLayers; y++)
+        {
+            var coord = new Vector3I(x, y, z);
+            if (!_chunks.ContainsKey(coord))
+                _loadQueue.Enqueue(coord);
+        }
+
+        // Unload chunks outside radius + 2 (hysteresis to prevent thrashing)
+        int unloadDist = radius + 2;
+        var toUnload = new List<Vector3I>();
+        foreach (var coord in _chunks.Keys)
+        {
+            int dx = Mathf.Abs(coord.X - cameraChunkXZ.X);
+            int dz = Mathf.Abs(coord.Z - cameraChunkXZ.Y);
+            if (dx > unloadDist || dz > unloadDist)
+                toUnload.Add(coord);
+        }
+
+        foreach (var coord in toUnload)
+            UnloadChunk(coord);
+
+        if (toUnload.Count > 0)
+            GD.Print($"Unloaded {toUnload.Count} chunks");
+    }
+
+    private void ProcessLoadQueue()
+    {
+        if (_loadQueue.Count == 0) return;
+
+        int loaded = 0;
+        var newlyLoaded = new List<Vector3I>();
+
+        while (_loadQueue.Count > 0 && loaded < ChunksPerFrame)
+        {
+            var coord = _loadQueue.Dequeue();
+            if (_chunks.ContainsKey(coord)) continue; // Already loaded (e.g. by initial burst)
+            LoadChunk(coord);
+            newlyLoaded.Add(coord);
+            loaded++;
+        }
+
+        // Regenerate meshes for newly loaded chunks + their neighbors
+        var toRegenerate = new HashSet<Vector3I>();
+        foreach (var coord in newlyLoaded)
+        {
+            toRegenerate.Add(coord);
+            // Add all 6 face-adjacent neighbors
+            toRegenerate.Add(coord + new Vector3I(1, 0, 0));
+            toRegenerate.Add(coord + new Vector3I(-1, 0, 0));
+            toRegenerate.Add(coord + new Vector3I(0, 1, 0));
+            toRegenerate.Add(coord + new Vector3I(0, -1, 0));
+            toRegenerate.Add(coord + new Vector3I(0, 0, 1));
+            toRegenerate.Add(coord + new Vector3I(0, 0, -1));
+        }
+
+        foreach (var coord in toRegenerate)
+            RegenerateChunkMesh(coord);
+
+        if (loaded > 0)
+            GD.Print($"Loaded {loaded} chunks ({_loadQueue.Count} remaining)");
+    }
+
+    private void UnloadChunk(Vector3I coord)
+    {
+        if (!_chunks.TryGetValue(coord, out var chunk)) return;
+        _chunks.Remove(coord);
+        RemoveChild(chunk);
+        chunk.QueueFree();
     }
 
     public void RegenerateChunkMesh(Vector3I chunkCoord)

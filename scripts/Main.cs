@@ -24,6 +24,7 @@ public partial class Main : Node3D
     public int TerrainSeed { get; set; } = 42;
 
     private World _world;
+    private CameraController _cameraController;
 
     public override void _Ready()
     {
@@ -45,11 +46,11 @@ public partial class Main : Node3D
             int surfaceHeight = _world.GetSurfaceHeight(spawnXZ.X, spawnXZ.Y);
 
             // RTS camera: pivot at spawn area, above terrain
-            var cameraController = new CameraController();
-            cameraController.Name = "CameraController";
-            cameraController.Position = new Vector3(spawnXZ.X + 0.5f, surfaceHeight + 2, spawnXZ.Y + 0.5f);
-            AddChild(cameraController);
-            var camera = cameraController.Camera;
+            _cameraController = new CameraController();
+            _cameraController.Name = "CameraController";
+            _cameraController.Position = new Vector3(spawnXZ.X + 0.5f, surfaceHeight + 2, spawnXZ.Y + 0.5f);
+            AddChild(_cameraController);
+            var camera = _cameraController.Camera;
 
             // Spawn colonist on the surface (surfaceHeight + 1 = standing on top of surface block)
             var spawnPos = new Vector3(spawnXZ.X + 0.5f, surfaceHeight + 1.5f, spawnXZ.Y + 0.5f);
@@ -73,6 +74,17 @@ public partial class Main : Node3D
             if (light != null)
                 light.DirectionalShadowMaxDistance = 250;
         }
+    }
+
+    public override void _Process(double delta)
+    {
+        if (Engine.IsEditorHint() || _cameraController == null || _world == null) return;
+
+        // Convert camera world position to chunk XZ coordinate
+        var camPos = _cameraController.Position;
+        int chunkX = Mathf.FloorToInt(camPos.X / Chunk.SIZE);
+        int chunkZ = Mathf.FloorToInt(camPos.Z / Chunk.SIZE);
+        _world.UpdateLoadedChunks(new Vector2I(chunkX, chunkZ), ChunkRenderDistance);
     }
 
     /// <summary>
