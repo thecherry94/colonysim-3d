@@ -38,21 +38,21 @@ public partial class Main : Node3D
             if (editorCamera != null)
                 editorCamera.QueueFree();
 
-            // Compute world center position from chunk grid
+            // Find a valid spawn position: dry land near world center
             float worldCenterX = ChunkRenderDistance * Chunk.SIZE + Chunk.SIZE / 2.0f;
             float worldCenterZ = ChunkRenderDistance * Chunk.SIZE + Chunk.SIZE / 2.0f;
-            int surfaceHeight = _world.GetSurfaceHeight(
-                (int)worldCenterX, (int)worldCenterZ);
+            var spawnXZ = FindDryLandNear((int)worldCenterX, (int)worldCenterZ);
+            int surfaceHeight = _world.GetSurfaceHeight(spawnXZ.X, spawnXZ.Y);
 
-            // RTS camera: pivot centered on world, above terrain
+            // RTS camera: pivot at spawn area, above terrain
             var cameraController = new CameraController();
             cameraController.Name = "CameraController";
-            cameraController.Position = new Vector3(worldCenterX, surfaceHeight + 2, worldCenterZ);
+            cameraController.Position = new Vector3(spawnXZ.X + 0.5f, surfaceHeight + 2, spawnXZ.Y + 0.5f);
             AddChild(cameraController);
             var camera = cameraController.Camera;
 
-            // Spawn colonist at world center, above terrain
-            var spawnPos = new Vector3(worldCenterX, surfaceHeight + 3, worldCenterZ);
+            // Spawn colonist on the surface (surfaceHeight + 1 = standing on top of surface block)
+            var spawnPos = new Vector3(spawnXZ.X + 0.5f, surfaceHeight + 1.5f, spawnXZ.Y + 0.5f);
             var pathfinder = new VoxelPathfinder(_world);
             var colonist = new Colonist();
             colonist.Name = "Colonist";
@@ -73,6 +73,49 @@ public partial class Main : Node3D
             if (light != null)
                 light.DirectionalShadowMaxDistance = 250;
         }
+    }
+
+    /// <summary>
+    /// Search in expanding squares from the center to find a position on dry land
+    /// (surface height above water level). Returns the (X, Z) world block coordinate.
+    /// </summary>
+    private Vector2I FindDryLandNear(int centerX, int centerZ)
+    {
+        // Check center first
+        int h = _world.GetSurfaceHeight(centerX, centerZ);
+        if (h > TerrainGenerator.WaterLevel)
+            return new Vector2I(centerX, centerZ);
+
+        // Expand in rings up to 64 blocks out
+        for (int radius = 1; radius <= 64; radius++)
+        {
+            for (int dx = -radius; dx <= radius; dx++)
+            {
+                // Check the 4 edges of the square ring
+                int[] dzOptions = (dx == -radius || dx == radius)
+                    ? GenerateRange(-radius, radius)
+                    : new[] { -radius, radius };
+
+                foreach (int dz in dzOptions)
+                {
+                    h = _world.GetSurfaceHeight(centerX + dx, centerZ + dz);
+                    if (h > TerrainGenerator.WaterLevel)
+                        return new Vector2I(centerX + dx, centerZ + dz);
+                }
+            }
+        }
+
+        // Fallback: just use center
+        GD.Print("WARNING: No dry land found near spawn, using center");
+        return new Vector2I(centerX, centerZ);
+    }
+
+    private static int[] GenerateRange(int from, int to)
+    {
+        var result = new int[to - from + 1];
+        for (int i = 0; i < result.Length; i++)
+            result[i] = from + i;
+        return result;
     }
 
     private void SetupWorld()

@@ -90,8 +90,10 @@ public class TerrainGenerator
 
         float rawHeight = baseHeight + elevation * amplitude + detail * detailAmp;
 
-        // River carving: only in non-mountainous areas (continentalness <= 0.5)
-        if (continental <= 0.5f)
+        // River carving: only where terrain is above water and not mountainous
+        // Skip if terrain is already at or below water level (lakes/oceans) —
+        // carving a river through a lake creates artificial land barriers
+        if (continental <= 0.5f && rawHeight > WaterLevel + 1)
         {
             float absRiver = Mathf.Abs(river);
             if (absRiver < RiverWidth)
@@ -101,7 +103,7 @@ public class TerrainGenerator
             }
             else if (absRiver < RiverBankWidth)
             {
-                // River banks: smooth transition from terrain to water edge
+                // River banks: smooth slope from terrain to water edge
                 float t = (absRiver - RiverWidth) / (RiverBankWidth - RiverWidth);
                 t = t * t; // Ease-in for smoother bank slopes
                 rawHeight = Mathf.Lerp(WaterLevel, rawHeight, t);
@@ -123,6 +125,7 @@ public class TerrainGenerator
 
     /// <summary>
     /// Returns true if this position is in a river channel.
+    /// Only true where terrain is naturally above water level (not in lakes).
     /// </summary>
     private bool IsRiverChannel(int worldX, int worldZ)
     {
@@ -130,7 +133,19 @@ public class TerrainGenerator
         if (continental > 0.5f) return false; // No rivers on mountains
 
         float river = _riverNoise.GetNoise2D(worldX, worldZ);
-        return Mathf.Abs(river) < RiverWidth;
+        if (Mathf.Abs(river) >= RiverWidth) return false;
+
+        // Check if terrain is naturally above water (before river carving)
+        float elevation = _elevationNoise.GetNoise2D(worldX, worldZ);
+        float detail = _detailNoise.GetNoise2D(worldX, worldZ);
+        float cNorm = (continental + 1.0f) * 0.5f;
+        float cSquared = cNorm * cNorm;
+        float baseH = Mathf.Lerp(22.0f, 40.0f, cSquared);
+        float amp = Mathf.Lerp(4.0f, 18.0f, cSquared);
+        float detAmp = Mathf.Lerp(0.5f, 3.0f, cNorm);
+        float naturalHeight = baseH + elevation * amp + detail * detAmp;
+
+        return naturalHeight > WaterLevel + 1;
     }
 
     /// <summary>
