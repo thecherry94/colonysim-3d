@@ -191,10 +191,11 @@ The chunk mesh generator uses **greedy meshing** (Mikola Lysenko algorithm) to m
 - `[ThreadStatic]` scratch buffers (`_sliceMask`, `_sliceVisited`) for thread-safe parallel generation
 - `GenerateMeshData()` returns thread-safe `ChunkMeshData` struct (raw arrays), `BuildArrayMesh()` creates Godot objects on main thread
 - Collision merges ALL solid types together (better merging than render path since no visual distinction)
-- One surface per block type in the render mesh (same material setup as before)
 - CW winding order preserved: verified for all 6 faces with w=1, h=1 matching original vertex positions
 
-**Performance:** Flat 16×16 surfaces reduce from 256 quads (512 triangles) to 1 quad (2 triangles) — up to 256× reduction. Typical terrain sees 5-10× overall triangle reduction.
+**Single-surface optimization:** All opaque/solid block types are merged into a **single mesh surface** per chunk. Only water gets a separate surface (different shader for alpha blending). This produces max 2 surfaces per chunk instead of one per block type (~6-8 surfaces). At render distance 20, this reduces draw calls from ~80,000 to ~13,000. The greedy merge respects block type boundaries (won't merge Grass into Stone), so vertex colors remain correct per block type. Two shared `ShaderMaterial` instances (opaque + water) are reused across all chunks — no per-chunk material allocations.
+
+**Performance:** Flat 16×16 surfaces reduce from 256 quads (512 triangles) to 1 quad (2 triangles) — up to 256× reduction. Typical terrain sees 5-10× overall triangle reduction. The single-surface approach also speeds up mesh generation: 2 mask passes (opaque + water + collision) instead of 12+ (one per block type + collision).
 
 ### 3.9 Tree Generation
 
@@ -374,6 +375,7 @@ When the game runs, it loads the pre-baked collision shapes from the scene AND c
 | 20 | Cave generation (dual-threshold 3D noise spaghetti caves, depth-scaled) | Done |
 | 21 | Y-level camera slicing (shader-based Y-clip, Page Up/Down controls, raycast pierce) | Done |
 | 22 | Performance: distance-based collision, increased pipeline throughput, reduced shadows | Done |
+| 23 | Performance: single-surface chunks (merge all opaque blocks, ~6x fewer draw calls) | Done |
 
 ### Future Phases (not yet planned in detail):
 - Multiple colonists
@@ -403,7 +405,7 @@ colonysim-3d/
 │   ├── world/
 │   │   ├── World.cs                      # Chunk manager, streaming, chunk cache, collision radius
 │   │   ├── Chunk.cs                      # 16x16x16 block storage, mesh, distance-based collision
-│   │   ├── ChunkMeshGenerator.cs         # Greedy meshing ArrayMesh + collision generation
+│   │   ├── ChunkMeshGenerator.cs         # Greedy meshing, single-surface opaque + water, collision
 │   │   ├── TerrainGenerator.cs           # 5-layer FastNoiseLite terrain + biomes + rivers
 │   │   ├── TreeGenerator.cs              # Deterministic grid-based tree placement
 │   │   ├── CaveGenerator.cs              # Dual-threshold 3D noise cave carving
@@ -473,6 +475,10 @@ colonysim-3d/
 23. **ConcavePolygonShape3D is extremely expensive for the physics broadphase.** At render distance 20 (13,448 chunks), having collision on every chunk tanks FPS because Jolt processes all shapes every physics frame. Use distance-based collision (`CollisionRadius = 4`) — only chunks near the camera need collision. Distant chunks only need rendering (Godot auto-frustum-culls `MeshInstance3D` nodes). When adding colonist simulation outside camera range, consider abstract pathfinding without physics collision.
 
 24. **Chunk collision faces are cached separately from the mesh.** `_lastCollisionFaces` stores the raw `Vector3[]` from mesh generation. This allows `EnableCollision()` to apply collision data without re-running greedy meshing. The cache is a reference (not copy) — cheap to store.
+
+25. **Never create one mesh surface per block type.** Each mesh surface = 1 draw call. With 12 block types and 13k chunks, that's ~80k draw calls — way too many. Instead, merge all opaque blocks into a single surface with per-vertex colors. Only water needs a separate surface (different shader). Max 2 surfaces per chunk = max ~26k draw calls (after frustum culling: ~6-8k).
+
+26. **Share ShaderMaterial instances across chunks.** Since chunk shaders have no per-material uniforms (all differentiation via vertex colors and global uniforms), a single `ShaderMaterial` instance can be shared by all chunks. This avoids allocating 80k+ material objects.
 
 ---
 
