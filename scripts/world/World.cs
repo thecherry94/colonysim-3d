@@ -15,6 +15,25 @@ public partial class World : Node3D
     private TerrainGenerator _terrainGenerator;
 
     /// <summary>
+    /// Set the terrain generator externally (from Main, which owns the seed).
+    /// Must be called before LoadChunkArea().
+    /// </summary>
+    public void SetTerrainGenerator(TerrainGenerator gen)
+    {
+        _terrainGenerator = gen;
+    }
+
+    /// <summary>
+    /// Returns the surface height at a world X/Z coordinate.
+    /// Used for positioning camera, colonist spawn, etc.
+    /// </summary>
+    public int GetSurfaceHeight(int worldX, int worldZ)
+    {
+        if (_terrainGenerator == null) return 10;
+        return _terrainGenerator.GetHeight(worldX, worldZ);
+    }
+
+    /// <summary>
     /// Convert world block coordinate to chunk coordinate.
     /// Uses floor division (not truncation) so negative coords work correctly.
     /// </summary>
@@ -69,10 +88,16 @@ public partial class World : Node3D
     /// <summary>
     /// Load a grid of chunks centered at the given chunk coordinate.
     /// Only loads Y=0 layer for now (single vertical layer).
+    /// Terrain generator must be set via SetTerrainGenerator() before calling this.
     /// </summary>
-    public void LoadChunkArea(Vector3I center, int radius, int seed = 42)
+    public void LoadChunkArea(Vector3I center, int radius)
     {
-        _terrainGenerator ??= new TerrainGenerator(seed);
+        _terrainGenerator ??= new TerrainGenerator();
+
+        int totalChunks = (2 * radius + 1) * (2 * radius + 1);
+        int loaded = 0;
+
+        GD.Print($"LoadChunkArea: loading {totalChunks} chunks (center={center}, radius={radius})...");
 
         for (int x = center.X - radius; x <= center.X + radius; x++)
         for (int z = center.Z - radius; z <= center.Z + radius; z++)
@@ -80,9 +105,12 @@ public partial class World : Node3D
             var coord = new Vector3I(x, 0, z);
             if (_chunks.ContainsKey(coord)) continue;
             LoadChunk(coord);
+            loaded++;
+            if (loaded % 25 == 0)
+                GD.Print($"  Loading chunks: {loaded}/{totalChunks}...");
         }
 
-        GD.Print($"LoadChunkArea: center=({center}), radius={radius}, total chunks={_chunks.Count}");
+        GD.Print($"LoadChunkArea: {loaded} chunks loaded, total={_chunks.Count}");
 
         // After all chunks loaded, regenerate all meshes for cross-chunk face culling
         RegenerateAllMeshes();

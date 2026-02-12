@@ -27,16 +27,18 @@ public partial class Colonist : CharacterBody3D
     private float _stuckTimer;
     private Vector3 _lastProgressPos;
     private float _jumpGraceTimer;
+    private Vector3 _spawnPosition = new(8, 15, 8);
 
     // Path visualization
     private MeshInstance3D _pathMeshInstance;
     private ImmediateMesh _pathMesh;
     private bool _showPath = true;
 
-    public void Initialize(World world, VoxelPathfinder pathfinder)
+    public void Initialize(World world, VoxelPathfinder pathfinder, Vector3 spawnPosition)
     {
         _world = world;
         _pathfinder = pathfinder;
+        _spawnPosition = spawnPosition;
     }
 
     public override void _Ready()
@@ -159,8 +161,8 @@ public partial class Colonist : CharacterBody3D
         // Void safety: if fallen below the world, teleport back to spawn
         if (Position.Y < -20)
         {
-            GD.Print($"Colonist: fell into void at {Position}, resetting to spawn");
-            Position = new Vector3(8, 15, 8);
+            GD.Print($"Colonist: fell into void at {Position}, resetting to spawn at {_spawnPosition}");
+            Position = _spawnPosition;
             Velocity = Vector3.Zero;
             _waypoints = null;
             _state = State.Idle;

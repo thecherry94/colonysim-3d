@@ -5,11 +5,24 @@ using Godot;
 [Tool]
 public partial class Main : Node3D
 {
+    /// <summary>
+    /// Chunk render distance from center. distance=5 → 11×11 grid = 121 chunks = 176×176 blocks.
+    /// </summary>
+    [Export(PropertyHint.Range, "1,30,1")]
+    public int ChunkRenderDistance { get; set; } = 5;
+
+    /// <summary>
+    /// Seed for terrain generation. Different seeds produce different worlds.
+    /// </summary>
+    [Export(PropertyHint.Range, "1,99999,1")]
+    public int TerrainSeed { get; set; } = 42;
+
     private World _world;
 
     public override void _Ready()
     {
         GD.Print("=== ColonySim Starting ===");
+        GD.Print($"  ChunkRenderDistance={ChunkRenderDistance}, TerrainSeed={TerrainSeed}");
 
         SetupWorld();
 
@@ -20,20 +33,32 @@ public partial class Main : Node3D
             if (editorCamera != null)
                 editorCamera.QueueFree();
 
+            // Compute world center position from chunk grid
+            int gridSize = 2 * ChunkRenderDistance + 1;
+            float worldCenterX = ChunkRenderDistance * Chunk.SIZE + Chunk.SIZE / 2.0f;
+            float worldCenterZ = ChunkRenderDistance * Chunk.SIZE + Chunk.SIZE / 2.0f;
+            int surfaceHeight = _world.GetSurfaceHeight(
+                (int)worldCenterX, (int)worldCenterZ);
+
+            GD.Print($"World center: ({worldCenterX}, {worldCenterZ}), surface height: {surfaceHeight}");
+
             // RTS camera: pivot centered on world, camera orbits around it
             var cameraController = new CameraController();
             cameraController.Name = "CameraController";
-            cameraController.Position = new Vector3(40, 6, 40); // Pivot at world center
+            cameraController.Position = new Vector3(worldCenterX, surfaceHeight + 2, worldCenterZ);
             AddChild(cameraController);
             var camera = cameraController.Camera;
 
-            // Spawn colonist
+            // Spawn colonist at world center, above terrain
+            var spawnPos = new Vector3(worldCenterX, surfaceHeight + 3, worldCenterZ);
             var pathfinder = new VoxelPathfinder(_world);
             var colonist = new Colonist();
             colonist.Name = "Colonist";
-            colonist.Position = new Vector3(40, 15, 40); // Drop above terrain, will fall to surface
+            colonist.Position = spawnPos;
             AddChild(colonist);
-            colonist.Initialize(_world, pathfinder);
+            colonist.Initialize(_world, pathfinder, spawnPos);
+
+            GD.Print($"Colonist spawned at {spawnPos}");
 
             // Block interaction: left-click remove, right-click command colonist
             var blockInteraction = new BlockInteraction();
@@ -63,8 +88,16 @@ public partial class Main : Node3D
         if (Engine.IsEditorHint())
             _world.Owner = GetTree().EditedSceneRoot;
 
-        // Load a 5x5 grid of chunks (80x80 blocks)
-        _world.LoadChunkArea(new Vector3I(2, 0, 2), 2);
-        GD.Print("World initialized: 5x5 chunk grid (80x80 blocks)");
+        // Create terrain generator with the configured seed and pass to world
+        var terrainGen = new TerrainGenerator(TerrainSeed);
+        _world.SetTerrainGenerator(terrainGen);
+
+        // Load chunk grid: center chunk = (distance, 0, distance) so world starts at (0,0,0)
+        var center = new Vector3I(ChunkRenderDistance, 0, ChunkRenderDistance);
+        _world.LoadChunkArea(center, ChunkRenderDistance);
+
+        int gridSize = 2 * ChunkRenderDistance + 1;
+        int blockSpan = gridSize * Chunk.SIZE;
+        GD.Print($"World initialized: {gridSize}x{gridSize} chunk grid ({blockSpan}x{blockSpan} blocks)");
     }
 }
