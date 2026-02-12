@@ -122,6 +122,15 @@ public partial class World : Node3D
     }
 
     /// <summary>
+    /// Returns true if a chunk at the given coordinate is loaded and has had its mesh applied.
+    /// Used to check if collision/rendering is ready before enabling colonist physics.
+    /// </summary>
+    public bool IsChunkReady(Vector3I coord)
+    {
+        return _chunks.TryGetValue(coord, out var chunk) && chunk.HasMesh;
+    }
+
+    /// <summary>
     /// Returns the biome at a world X/Z coordinate.
     /// </summary>
     public BiomeType GetBiome(int worldX, int worldZ)

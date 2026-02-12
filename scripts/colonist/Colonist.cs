@@ -28,6 +28,7 @@ public partial class Colonist : CharacterBody3D
     private Vector3 _lastProgressPos;
     private float _jumpGraceTimer;
     private Vector3 _spawnPosition = new(8, 15, 8);
+    private bool _physicsReady;
 
     // Path visualization
     private MeshInstance3D _pathMeshInstance;
@@ -39,6 +40,24 @@ public partial class Colonist : CharacterBody3D
         _world = world;
         _pathfinder = pathfinder;
         _spawnPosition = spawnPosition;
+    }
+
+    /// <summary>
+    /// Update the void-safety teleport position after correcting for caves.
+    /// </summary>
+    public void SetSpawnPosition(Vector3 spawnPosition)
+    {
+        _spawnPosition = spawnPosition;
+    }
+
+    /// <summary>
+    /// Enable physics processing. Called by Main after chunks around the spawn area
+    /// have loaded, ensuring collision shapes exist before gravity is applied.
+    /// </summary>
+    public void EnablePhysics()
+    {
+        _physicsReady = true;
+        GD.Print($"Colonist: physics enabled at {Position}");
     }
 
     public override void _Ready()
@@ -156,6 +175,9 @@ public partial class Colonist : CharacterBody3D
 
     public override void _PhysicsProcess(double delta)
     {
+        // Wait for chunks to load before applying physics — prevents falling through void
+        if (!_physicsReady) return;
+
         float dt = (float)delta;
 
         // Void safety: if fallen below the world, teleport back to spawn

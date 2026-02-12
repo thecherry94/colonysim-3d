@@ -25,6 +25,10 @@ public partial class Main : Node3D
 
     private World _world;
     private CameraController _cameraController;
+    private Colonist _colonist;
+    private bool _colonistPhysicsEnabled;
+    private Vector2I _spawnChunkXZ;
+    private int _spawnSurfaceHeight;
 
     public override void _Ready()
     {
@@ -39,36 +43,38 @@ public partial class Main : Node3D
             if (editorCamera != null)
                 editorCamera.QueueFree();
 
-            // Find a valid spawn position: dry land near world center
-            float worldCenterX = ChunkRenderDistance * Chunk.SIZE + Chunk.SIZE / 2.0f;
-            float worldCenterZ = ChunkRenderDistance * Chunk.SIZE + Chunk.SIZE / 2.0f;
-            var spawnXZ = FindDryLandNear((int)worldCenterX, (int)worldCenterZ);
-            int surfaceHeight = _world.GetSurfaceHeight(spawnXZ.X, spawnXZ.Y);
+            // Find a valid spawn position: dry land near world origin
+            var spawnXZ = FindDryLandNear(0, 0);
+            _spawnSurfaceHeight = _world.GetSurfaceHeight(spawnXZ.X, spawnXZ.Y);
+            _spawnChunkXZ = new Vector2I(
+                Mathf.FloorToInt((float)spawnXZ.X / Chunk.SIZE),
+                Mathf.FloorToInt((float)spawnXZ.Y / Chunk.SIZE)
+            );
 
             // RTS camera: pivot at spawn area, above terrain
             _cameraController = new CameraController();
             _cameraController.Name = "CameraController";
-            _cameraController.Position = new Vector3(spawnXZ.X + 0.5f, surfaceHeight + 2, spawnXZ.Y + 0.5f);
+            _cameraController.Position = new Vector3(spawnXZ.X + 0.5f, _spawnSurfaceHeight + 2, spawnXZ.Y + 0.5f);
             AddChild(_cameraController);
             _cameraController.SetMaxWorldHeight(ChunkYLayers * Chunk.SIZE);
             var camera = _cameraController.Camera;
 
-            // Spawn colonist on the surface (surfaceHeight + 1 = standing on top of surface block)
-            var spawnPos = new Vector3(spawnXZ.X + 0.5f, surfaceHeight + 1.5f, spawnXZ.Y + 0.5f);
+            // Spawn colonist on the surface (physics frozen until chunks load)
+            var spawnPos = new Vector3(spawnXZ.X + 0.5f, _spawnSurfaceHeight + 1.5f, spawnXZ.Y + 0.5f);
             var pathfinder = new VoxelPathfinder(_world);
-            var colonist = new Colonist();
-            colonist.Name = "Colonist";
-            colonist.Position = spawnPos;
-            AddChild(colonist);
-            colonist.Initialize(_world, pathfinder, spawnPos);
+            _colonist = new Colonist();
+            _colonist.Name = "Colonist";
+            _colonist.Position = spawnPos;
+            AddChild(_colonist);
+            _colonist.Initialize(_world, pathfinder, spawnPos);
 
-            GD.Print($"Colonist spawned at {spawnPos}, surface height={surfaceHeight}");
+            GD.Print($"Colonist placed at {spawnPos} (physics frozen until chunks load), surface height={_spawnSurfaceHeight}");
 
             // Block interaction: left-click remove, right-click command colonist
             var blockInteraction = new BlockInteraction();
             blockInteraction.Name = "BlockInteraction";
             AddChild(blockInteraction);
-            blockInteraction.Initialize(camera, _world, colonist, ChunkRenderDistance);
+            blockInteraction.Initialize(camera, _world, _colonist, ChunkRenderDistance);
 
             // Increase shadow distance for taller terrain
             var light = GetNodeOrNull<DirectionalLight3D>("DirectionalLight3D");
@@ -86,6 +92,69 @@ public partial class Main : Node3D
         int chunkX = Mathf.FloorToInt(camPos.X / Chunk.SIZE);
         int chunkZ = Mathf.FloorToInt(camPos.Z / Chunk.SIZE);
         _world.UpdateLoadedChunks(new Vector2I(chunkX, chunkZ), ChunkRenderDistance);
+
+        // Wait for spawn-area chunks to load before enabling colonist physics
+        if (!_colonistPhysicsEnabled && _colonist != null)
+        {
+            CheckSpawnChunksReady();
+        }
+    }
+
+    /// <summary>
+    /// Check if the chunks around the spawn position have loaded and have meshes/collision.
+    /// When ready, enable colonist physics and correct spawn height using actual block data.
+    /// </summary>
+    private void CheckSpawnChunksReady()
+    {
+        // Check the spawn chunk and its immediate Y column neighbors
+        int chunkX = _spawnChunkXZ.X;
+        int chunkZ = _spawnChunkXZ.Y;
+        int spawnChunkY = Mathf.FloorToInt((float)_spawnSurfaceHeight / Chunk.SIZE);
+
+        // Need at least the chunk containing the spawn Y level to be ready
+        var spawnChunk = new Vector3I(chunkX, spawnChunkY, chunkZ);
+        if (!_world.IsChunkReady(spawnChunk)) return;
+
+        // Also check the chunk below (colonist might be near a chunk Y boundary)
+        if (spawnChunkY > 0)
+        {
+            var belowChunk = new Vector3I(chunkX, spawnChunkY - 1, chunkZ);
+            if (!_world.IsChunkReady(belowChunk)) return;
+        }
+
+        // Chunks are ready — find actual surface using real block data (accounts for caves)
+        var spawnXZ = new Vector2I(
+            Mathf.FloorToInt(_colonist.Position.X),
+            Mathf.FloorToInt(_colonist.Position.Z)
+        );
+        int actualSurface = FindActualSurface(spawnXZ.X, spawnXZ.Y, _spawnSurfaceHeight + 10);
+
+        // Correct colonist position to actual surface
+        var correctedPos = new Vector3(spawnXZ.X + 0.5f, actualSurface + 1.5f, spawnXZ.Y + 0.5f);
+        _colonist.Position = correctedPos;
+        _colonist.SetSpawnPosition(correctedPos); // Update void-safety teleport target
+
+        // Enable physics and mark as done
+        _colonist.EnablePhysics();
+        _colonistPhysicsEnabled = true;
+
+        GD.Print($"Colonist spawn finalized at {correctedPos} (actual surface={actualSurface}, noise height={_spawnSurfaceHeight})");
+    }
+
+    /// <summary>
+    /// Scan downward through actual block data to find the highest solid block at (x, z).
+    /// Handles caves that may have carved away the noise-predicted surface.
+    /// </summary>
+    private int FindActualSurface(int worldX, int worldZ, int startY)
+    {
+        for (int y = startY; y >= 0; y--)
+        {
+            var block = _world.GetBlock(new Vector3I(worldX, y, worldZ));
+            if (BlockData.IsSolid(block))
+                return y;
+        }
+        // Fallback: use noise height if no solid block found (shouldn't happen)
+        return _spawnSurfaceHeight;
     }
 
     /// <summary>

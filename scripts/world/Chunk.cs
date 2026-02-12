@@ -26,6 +26,7 @@ public partial class Chunk : Node3D
     public Vector3I ChunkCoord { get; private set; }
     public bool IsDirty { get; private set; }
     public bool HasCollision => _hasCollision;
+    public bool HasMesh { get; private set; }
 
     /// <summary>
     /// Initialize the chunk. withCollision=false skips creating StaticBody3D + CollisionShape3D
@@ -189,6 +190,7 @@ public partial class Chunk : Node3D
             if (_hasCollision && _collisionShape != null)
                 _collisionShape.Shape = null;
             _lastCollisionFaces = null;
+            HasMesh = true;
             return;
         }
 
@@ -211,6 +213,8 @@ public partial class Chunk : Node3D
                 _collisionShape.Shape = null;
             }
         }
+
+        HasMesh = true;
     }
 
     /// <summary>
