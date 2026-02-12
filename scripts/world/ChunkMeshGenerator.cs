@@ -190,7 +190,6 @@ public static class ChunkMeshGenerator
             surfaceCount++;
         }
 
-        GD.Print($"ChunkMeshGenerator: {totalVertices} vertices, {totalTriangles} triangles across {surfaceCount} surfaces");
         return mesh;
     }
 
@@ -242,7 +241,6 @@ public static class ChunkMeshGenerator
             }
         }
 
-        GD.Print($"ChunkMeshGenerator: {collisionVerts.Count / 3} collision triangles");
         return collisionVerts.ToArray();
     }
 }

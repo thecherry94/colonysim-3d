@@ -1,11 +1,11 @@
 namespace ColonySim;
 
-using System;
 using Godot;
 
 /// <summary>
-/// Multi-layer noise terrain generator.
+/// Multi-layer noise terrain generator with vertical chunk support.
 /// 4 noise layers create diverse terrain: flat valleys, rolling hills, mountains, and rivers.
+/// Heights span 0-62 across multiple Y chunk layers (default 4 layers = 64 blocks tall).
 ///
 /// Layer 1 — Continentalness (freq 0.003): large-scale terrain category (lowland/midland/highland)
 /// Layer 2 — Elevation (freq 0.01): primary height variation, amplitude scaled by continentalness
@@ -19,7 +19,8 @@ public class TerrainGenerator
     private readonly FastNoiseLite _detailNoise;
     private readonly FastNoiseLite _riverNoise;
 
-    private const int WaterLevel = 3;
+    public const int WaterLevel = 25;
+    public const int MaxHeight = 62;
     private const float RiverWidth = 0.04f;
     private const float RiverBankWidth = 0.08f;
 
@@ -61,14 +62,14 @@ public class TerrainGenerator
         _riverNoise.Frequency = 0.005f;
         _riverNoise.FractalType = FastNoiseLite.FractalTypeEnum.None;
 
-        GD.Print($"TerrainGenerator initialized: seed={seed}, waterLevel={WaterLevel}");
-        GD.Print($"  Continentalness freq=0.003, Elevation freq=0.01, Detail freq=0.06, River freq=0.005");
+        GD.Print($"TerrainGenerator initialized: seed={seed}, waterLevel={WaterLevel}, maxHeight={MaxHeight}");
     }
 
     /// <summary>
     /// Returns the surface height at the given world X/Z coordinate.
     /// Height is computed from continentalness-scaled elevation + detail noise.
     /// Rivers carve into the terrain where river noise ≈ 0.
+    /// Returns a global Y coordinate (0-62), spanning multiple chunk layers.
     /// </summary>
     public int GetHeight(int worldX, int worldZ)
     {
@@ -82,10 +83,10 @@ public class TerrainGenerator
         float cNorm = (continental + 1.0f) * 0.5f;
         float cSquared = cNorm * cNorm; // Squaring makes lowlands genuinely flat
 
-        // Compute height with continentalness-scaled amplitude
-        float baseHeight = Mathf.Lerp(3.0f, 9.0f, cSquared);
-        float amplitude = Mathf.Lerp(1.0f, 4.5f, cSquared);
-        float detailAmp = Mathf.Lerp(0.3f, 1.2f, cNorm);
+        // Compute height with continentalness-scaled amplitude (scaled for 64-block range)
+        float baseHeight = Mathf.Lerp(22.0f, 40.0f, cSquared);
+        float amplitude = Mathf.Lerp(4.0f, 18.0f, cSquared);
+        float detailAmp = Mathf.Lerp(0.5f, 3.0f, cNorm);
 
         float rawHeight = baseHeight + elevation * amplitude + detail * detailAmp;
 
@@ -108,7 +109,7 @@ public class TerrainGenerator
         }
 
         int height = Mathf.RoundToInt(rawHeight);
-        return Mathf.Clamp(height, 1, Chunk.SIZE - 2);
+        return Mathf.Clamp(height, 2, MaxHeight);
     }
 
     /// <summary>
@@ -134,63 +135,44 @@ public class TerrainGenerator
 
     /// <summary>
     /// Fill a chunk's block array based on multi-layer noise terrain.
-    /// Block assignment varies by continentalness, height, and river proximity.
+    /// Supports any Y chunk layer — uses global world Y to determine block type.
     /// </summary>
     public void GenerateChunkBlocks(BlockType[,,] blocks, Vector3I chunkCoord)
     {
-        if (chunkCoord.Y != 0) return;
+        int chunkWorldYBase = chunkCoord.Y * Chunk.SIZE;
 
         for (int lx = 0; lx < Chunk.SIZE; lx++)
         for (int lz = 0; lz < Chunk.SIZE; lz++)
         {
             int worldX = chunkCoord.X * Chunk.SIZE + lx;
             int worldZ = chunkCoord.Z * Chunk.SIZE + lz;
-            int height = GetHeight(worldX, worldZ);
+            int surfaceHeight = GetHeight(worldX, worldZ);
             float continental = GetContinentalness(worldX, worldZ);
             bool inRiver = IsRiverChannel(worldX, worldZ);
 
-            int fillTop = Math.Max(height, WaterLevel);
-            if (fillTop >= Chunk.SIZE) fillTop = Chunk.SIZE - 1;
-
-            for (int ly = 0; ly <= fillTop; ly++)
+            for (int ly = 0; ly < Chunk.SIZE; ly++)
             {
-                if (ly > height)
+                int worldY = chunkWorldYBase + ly;
+
+                if (worldY > surfaceHeight && worldY > WaterLevel)
                 {
-                    // Above terrain surface but at or below water level — fill with water
+                    // Above both terrain and water → Air (default, skip)
+                    continue;
+                }
+                else if (worldY > surfaceHeight && worldY <= WaterLevel)
+                {
+                    // Above terrain but at or below water level → Water
                     blocks[lx, ly, lz] = BlockType.Water;
                 }
-                else if (ly == height)
+                else if (worldY == surfaceHeight)
                 {
-                    // Surface block — choose type based on context
-                    if (ly < WaterLevel)
-                    {
-                        // Underwater surface
-                        blocks[lx, ly, lz] = inRiver ? BlockType.Gravel : BlockType.Sand;
-                    }
-                    else if (height <= WaterLevel + 1)
-                    {
-                        // Beach / water edge
-                        blocks[lx, ly, lz] = BlockType.Sand;
-                    }
-                    else if (continental > 0.6f && height >= 12)
-                    {
-                        // Mountain peak — bare stone
-                        blocks[lx, ly, lz] = BlockType.Stone;
-                    }
-                    else
-                    {
-                        blocks[lx, ly, lz] = BlockType.Grass;
-                    }
+                    // Surface block
+                    blocks[lx, ly, lz] = GetSurfaceBlock(surfaceHeight, continental, inRiver);
                 }
-                else if (ly >= height - 2)
+                else if (worldY >= surfaceHeight - 3)
                 {
-                    // Sub-surface (1-2 blocks below surface)
-                    if (ly < WaterLevel && inRiver)
-                        blocks[lx, ly, lz] = BlockType.Sand;
-                    else if (height <= WaterLevel + 1)
-                        blocks[lx, ly, lz] = BlockType.Sand;
-                    else
-                        blocks[lx, ly, lz] = BlockType.Dirt;
+                    // Sub-surface (1-3 blocks below surface)
+                    blocks[lx, ly, lz] = GetSubSurfaceBlock(worldY, surfaceHeight, inRiver);
                 }
                 else
                 {
@@ -199,5 +181,44 @@ public class TerrainGenerator
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Determine the surface block type based on height, continentalness, and river proximity.
+    /// </summary>
+    private BlockType GetSurfaceBlock(int surfaceHeight, float continental, bool inRiver)
+    {
+        if (surfaceHeight < WaterLevel)
+        {
+            // Underwater surface
+            return inRiver ? BlockType.Gravel : BlockType.Sand;
+        }
+        else if (surfaceHeight <= WaterLevel + 2)
+        {
+            // Beach / water edge
+            return BlockType.Sand;
+        }
+        else if (continental > 0.6f && surfaceHeight >= 48)
+        {
+            // Mountain peak — bare stone
+            return BlockType.Stone;
+        }
+        else
+        {
+            return BlockType.Grass;
+        }
+    }
+
+    /// <summary>
+    /// Determine the sub-surface block type (1-3 blocks below surface).
+    /// </summary>
+    private BlockType GetSubSurfaceBlock(int worldY, int surfaceHeight, bool inRiver)
+    {
+        if (worldY < WaterLevel && inRiver)
+            return BlockType.Sand;
+        else if (surfaceHeight <= WaterLevel + 2)
+            return BlockType.Sand; // Beach subsurface
+        else
+            return BlockType.Dirt;
     }
 }

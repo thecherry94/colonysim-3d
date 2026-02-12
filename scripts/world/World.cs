@@ -7,12 +7,14 @@ using Godot;
 /// <summary>
 /// Manages chunks in a Dictionary keyed by chunk coordinate.
 /// Provides world-space block access and coordinate conversion.
+/// Supports vertical chunk stacking (multiple Y layers).
 /// </summary>
 [Tool]
 public partial class World : Node3D
 {
     private readonly Dictionary<Vector3I, Chunk> _chunks = new();
     private TerrainGenerator _terrainGenerator;
+    private int _yChunkLayers = 4;
 
     /// <summary>
     /// Set the terrain generator externally (from Main, which owns the seed).
@@ -24,12 +26,21 @@ public partial class World : Node3D
     }
 
     /// <summary>
+    /// Set the number of vertical chunk layers (default 4 = 64 blocks tall).
+    /// Must be called before LoadChunkArea().
+    /// </summary>
+    public void SetYChunkLayers(int layers)
+    {
+        _yChunkLayers = layers;
+    }
+
+    /// <summary>
     /// Returns the surface height at a world X/Z coordinate.
     /// Used for positioning camera, colonist spawn, etc.
     /// </summary>
     public int GetSurfaceHeight(int worldX, int worldZ)
     {
-        if (_terrainGenerator == null) return 10;
+        if (_terrainGenerator == null) return 30;
         return _terrainGenerator.GetHeight(worldX, worldZ);
     }
 
@@ -82,35 +93,36 @@ public partial class World : Node3D
             return;
         var local = WorldToLocalCoord(worldBlock);
         chunk.SetBlock(local.X, local.Y, local.Z, type);
-        GD.Print($"SetBlock: world ({worldBlock}) -> chunk ({chunkCoord}) local ({local}) = {type}");
     }
 
     /// <summary>
     /// Load a grid of chunks centered at the given chunk coordinate.
-    /// Only loads Y=0 layer for now (single vertical layer).
+    /// Loads multiple Y layers (0 to _yChunkLayers-1) for vertical terrain.
     /// Terrain generator must be set via SetTerrainGenerator() before calling this.
     /// </summary>
     public void LoadChunkArea(Vector3I center, int radius)
     {
         _terrainGenerator ??= new TerrainGenerator();
 
-        int totalChunks = (2 * radius + 1) * (2 * radius + 1);
+        int horizontalCount = (2 * radius + 1) * (2 * radius + 1);
+        int totalChunks = horizontalCount * _yChunkLayers;
         int loaded = 0;
 
-        GD.Print($"LoadChunkArea: loading {totalChunks} chunks (center={center}, radius={radius})...");
+        GD.Print($"LoadChunkArea: loading {totalChunks} chunks ({2 * radius + 1}x{2 * radius + 1} x {_yChunkLayers} Y layers)...");
 
         for (int x = center.X - radius; x <= center.X + radius; x++)
         for (int z = center.Z - radius; z <= center.Z + radius; z++)
+        for (int y = 0; y < _yChunkLayers; y++)
         {
-            var coord = new Vector3I(x, 0, z);
+            var coord = new Vector3I(x, y, z);
             if (_chunks.ContainsKey(coord)) continue;
             LoadChunk(coord);
             loaded++;
-            if (loaded % 25 == 0)
+            if (loaded % 100 == 0)
                 GD.Print($"  Loading chunks: {loaded}/{totalChunks}...");
         }
 
-        GD.Print($"LoadChunkArea: {loaded} chunks loaded, total={_chunks.Count}");
+        GD.Print($"LoadChunkArea: {loaded} chunks loaded");
 
         // After all chunks loaded, regenerate all meshes for cross-chunk face culling
         RegenerateAllMeshes();
@@ -132,8 +144,6 @@ public partial class World : Node3D
         _chunks[chunkCoord] = chunk;
 
         FillChunkTerrain(chunk, chunkCoord);
-
-        GD.Print($"Loaded chunk at ({chunkCoord.X}, {chunkCoord.Y}, {chunkCoord.Z}): {chunk.CountSolidBlocks()} solid blocks");
     }
 
     private void FillChunkTerrain(Chunk chunk, Vector3I chunkCoord)
@@ -145,10 +155,18 @@ public partial class World : Node3D
 
     private void RegenerateAllMeshes()
     {
+        int meshCount = 0;
+        int skippedCount = 0;
         foreach (var (coord, chunk) in _chunks)
+        {
             chunk.GenerateMesh(MakeNeighborCallback(coord));
+            if (chunk.IsEmpty())
+                skippedCount++;
+            else
+                meshCount++;
+        }
 
-        GD.Print($"Regenerated meshes for {_chunks.Count} chunks");
+        GD.Print($"Meshes generated: {meshCount} active, {skippedCount} empty (skipped)");
     }
 
     /// <summary>

@@ -6,10 +6,16 @@ using Godot;
 public partial class Main : Node3D
 {
     /// <summary>
-    /// Chunk render distance from center. distance=5 → 11×11 grid = 121 chunks = 176×176 blocks.
+    /// Chunk render distance from center. distance=5 → 11×11 grid.
     /// </summary>
     [Export(PropertyHint.Range, "1,30,1")]
     public int ChunkRenderDistance { get; set; } = 5;
+
+    /// <summary>
+    /// Number of vertical chunk layers. layers=4 → 64 blocks tall.
+    /// </summary>
+    [Export(PropertyHint.Range, "1,8,1")]
+    public int ChunkYLayers { get; set; } = 4;
 
     /// <summary>
     /// Seed for terrain generation. Different seeds produce different worlds.
@@ -21,8 +27,7 @@ public partial class Main : Node3D
 
     public override void _Ready()
     {
-        GD.Print("=== ColonySim Starting ===");
-        GD.Print($"  ChunkRenderDistance={ChunkRenderDistance}, TerrainSeed={TerrainSeed}");
+        GD.Print($"=== ColonySim Starting (distance={ChunkRenderDistance}, yLayers={ChunkYLayers}, seed={TerrainSeed}) ===");
 
         SetupWorld();
 
@@ -34,15 +39,12 @@ public partial class Main : Node3D
                 editorCamera.QueueFree();
 
             // Compute world center position from chunk grid
-            int gridSize = 2 * ChunkRenderDistance + 1;
             float worldCenterX = ChunkRenderDistance * Chunk.SIZE + Chunk.SIZE / 2.0f;
             float worldCenterZ = ChunkRenderDistance * Chunk.SIZE + Chunk.SIZE / 2.0f;
             int surfaceHeight = _world.GetSurfaceHeight(
                 (int)worldCenterX, (int)worldCenterZ);
 
-            GD.Print($"World center: ({worldCenterX}, {worldCenterZ}), surface height: {surfaceHeight}");
-
-            // RTS camera: pivot centered on world, camera orbits around it
+            // RTS camera: pivot centered on world, above terrain
             var cameraController = new CameraController();
             cameraController.Name = "CameraController";
             cameraController.Position = new Vector3(worldCenterX, surfaceHeight + 2, worldCenterZ);
@@ -58,13 +60,18 @@ public partial class Main : Node3D
             AddChild(colonist);
             colonist.Initialize(_world, pathfinder, spawnPos);
 
-            GD.Print($"Colonist spawned at {spawnPos}");
+            GD.Print($"Colonist spawned at {spawnPos}, surface height={surfaceHeight}");
 
             // Block interaction: left-click remove, right-click command colonist
             var blockInteraction = new BlockInteraction();
             blockInteraction.Name = "BlockInteraction";
             AddChild(blockInteraction);
             blockInteraction.Initialize(camera, _world, colonist);
+
+            // Increase shadow distance for taller terrain
+            var light = GetNodeOrNull<DirectionalLight3D>("DirectionalLight3D");
+            if (light != null)
+                light.DirectionalShadowMaxDistance = 250;
         }
     }
 
@@ -91,6 +98,7 @@ public partial class Main : Node3D
         // Create terrain generator with the configured seed and pass to world
         var terrainGen = new TerrainGenerator(TerrainSeed);
         _world.SetTerrainGenerator(terrainGen);
+        _world.SetYChunkLayers(ChunkYLayers);
 
         // Load chunk grid: center chunk = (distance, 0, distance) so world starts at (0,0,0)
         var center = new Vector3I(ChunkRenderDistance, 0, ChunkRenderDistance);
@@ -98,6 +106,7 @@ public partial class Main : Node3D
 
         int gridSize = 2 * ChunkRenderDistance + 1;
         int blockSpan = gridSize * Chunk.SIZE;
-        GD.Print($"World initialized: {gridSize}x{gridSize} chunk grid ({blockSpan}x{blockSpan} blocks)");
+        int worldHeight = ChunkYLayers * Chunk.SIZE;
+        GD.Print($"World ready: {gridSize}x{gridSize} chunks, {ChunkYLayers} Y layers ({blockSpan}x{worldHeight}x{blockSpan} blocks)");
     }
 }

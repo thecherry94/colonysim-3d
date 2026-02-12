@@ -15,6 +15,7 @@ public partial class Chunk : Node3D
     private MeshInstance3D _meshInstance;
     private StaticBody3D _staticBody;
     private CollisionShape3D _collisionShape;
+    private bool _isEmpty = true;
 
     public Vector3I ChunkCoord { get; private set; }
 
@@ -43,9 +44,12 @@ public partial class Chunk : Node3D
             _staticBody.Owner = root;
             _collisionShape.Owner = root;
         }
-
-        GD.Print($"Chunk initialized at ({chunkCoord.X}, {chunkCoord.Y}, {chunkCoord.Z})");
     }
+
+    /// <summary>
+    /// Returns true if this chunk contains only Air blocks (no geometry needed).
+    /// </summary>
+    public bool IsEmpty() => _isEmpty;
 
     /// <summary>
     /// Returns the block type at local coordinates. Returns Air for out-of-bounds.
@@ -66,18 +70,28 @@ public partial class Chunk : Node3D
 
     /// <summary>
     /// Bulk-set the entire block array (used during terrain generation).
+    /// Also updates the _isEmpty cache.
     /// </summary>
     public void SetBlockData(BlockType[,,] blocks)
     {
         _blocks = blocks;
+        _isEmpty = !HasAnyNonAirBlocks();
     }
 
     /// <summary>
     /// Rebuild the mesh. getNeighborBlock handles coords outside 0..15.
+    /// Skips mesh generation entirely for empty chunks (all air).
     /// </summary>
     public void GenerateMesh(Func<int, int, int, BlockType> getNeighborBlock)
     {
-        int solidCount = CountSolidBlocks();
+        // Skip empty chunks — no mesh, no collision needed
+        if (_isEmpty)
+        {
+            _meshInstance.Mesh = null;
+            _collisionShape.Shape = null;
+            return;
+        }
+
         var mesh = ChunkMeshGenerator.GenerateMesh(_blocks, getNeighborBlock);
         _meshInstance.Mesh = mesh;
 
@@ -93,9 +107,6 @@ public partial class Chunk : Node3D
         {
             _collisionShape.Shape = null;
         }
-
-        int surfaceCount = mesh.GetSurfaceCount();
-        GD.Print($"Chunk ({ChunkCoord.X},{ChunkCoord.Y},{ChunkCoord.Z}): {solidCount} solid blocks, mesh has {surfaceCount} surfaces, {collisionFaces.Length / 3} collision tris");
     }
 
     /// <summary>
@@ -124,8 +135,7 @@ public partial class Chunk : Node3D
                 _blocks[x, 4, z] = BlockType.Air;
             }
         }
-
-        GD.Print($"Chunk test data filled: {CountSolidBlocks()} solid blocks");
+        _isEmpty = false;
     }
 
     public int CountSolidBlocks()
@@ -139,5 +149,20 @@ public partial class Chunk : Node3D
                 count++;
         }
         return count;
+    }
+
+    /// <summary>
+    /// Returns true if any block in this chunk is not Air.
+    /// Used to determine if mesh generation can be skipped.
+    /// </summary>
+    private bool HasAnyNonAirBlocks()
+    {
+        for (int x = 0; x < SIZE; x++)
+        for (int y = 0; y < SIZE; y++)
+        for (int z = 0; z < SIZE; z++)
+        {
+            if (_blocks[x, y, z] != BlockType.Air) return true;
+        }
+        return false;
     }
 }

@@ -79,7 +79,7 @@ public partial class Colonist : CharacterBody3D
         // Add path visualization to scene root (world space, not colonist-local)
         GetTree().Root.CallDeferred(Node.MethodName.AddChild, _pathMeshInstance);
 
-        GD.Print($"Colonist spawned at {Position}");
+        // Capsule mesh + shape created in _Ready
     }
 
     public override void _ExitTree()
@@ -149,7 +149,7 @@ public partial class Colonist : CharacterBody3D
         if (_waypointIndex < _waypoints.Count)
         {
             _state = State.Walking;
-            GD.Print($"Colonist: Walking, {_waypoints.Count} waypoints");
+            GD.Print($"Colonist: path set, {_waypoints.Count} waypoints");
             RebuildPathVisualization();
         }
     }
@@ -347,7 +347,6 @@ public partial class Colonist : CharacterBody3D
     {
         if (_state != newState)
         {
-            GD.Print($"Colonist: {_state} -> {newState} at ({Position.X:F1}, {Position.Y:F1}, {Position.Z:F1})");
             _state = newState;
 
             if (newState == State.Idle)
