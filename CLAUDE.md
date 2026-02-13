@@ -113,6 +113,8 @@ Use `CharacterBody3D` with `MoveAndSlide()` and a simple state machine:
 
 Add **stuck detection**: if the colonist makes no progress for ~2 seconds, clear the path and go idle (or repath).
 
+**Deferred physics:** `_physicsReady` flag (default `false`) gates all `_PhysicsProcess` logic. `Main` calls `EnablePhysics()` after spawn-area chunks have loaded. `SetSpawnPosition()` updates the void-safety teleport target after cave-safe height correction. See section 3.12.
+
 **Capsule dimensions:** radius=0.3, height=1.6. This gives 0.2 units of wall clearance when the colonist is at a block center (0.5 - 0.3 = 0.2).
 
 **Path visualization:** Red line + cross markers drawn via ImmediateMesh, toggled with F1. Added to scene root (world space, not colonist-local) with NoDepthTest for visibility.
@@ -253,7 +255,21 @@ Dwarf Fortress-style Y-level slicing lets the player see underground by hiding e
 
 **Controls:** Page Down = lower slice (1 block per press, first press starts at Y=40), Page Up = raise slice (1 block per press), Home = disable slicing. Slice keys use `Input.IsKeyPressed` polling with debounce in `_Process` (not `_UnhandledInput`) to avoid event routing issues.
 
-### 3.12 Why Build From Scratch (Not Use Existing Voxel Libraries)
+### 3.12 Colonist Spawn Safety
+
+The colonist must not receive physics (gravity) until the chunks around it have loaded and have collision shapes. Without this, the colonist falls through void in frame 0-1 before any collision exists.
+
+**Deferred physics pattern:**
+- `Colonist._physicsReady` starts `false`. `_PhysicsProcess()` returns early until enabled.
+- `Main.CheckSpawnChunksReady()` runs each frame in `_Process()`, checking `World.IsChunkReady(spawnChunk)` — which returns true when the chunk exists in `_chunks` and has had `ApplyMeshData()` called (`Chunk.HasMesh`).
+- Once the spawn chunk and the chunk below it are ready, `Main` corrects the colonist's height and calls `Colonist.EnablePhysics()`.
+- `Colonist.SetSpawnPosition()` updates the void-safety teleport target after height correction.
+
+**Cave-safe height correction:** `World.GetSurfaceHeight()` uses `TerrainGenerator.GetHeight()` which evaluates noise — it doesn't account for caves carved below the surface. After chunks load, `Main.FindActualSurface()` scans downward through real `World.GetBlock()` data to find the highest solid block. This is the colonist's actual spawn Y.
+
+**Spawn origin:** The colonist spawns near world origin `(0, 0)` and `FindDryLandNear()` searches outward for dry land. The old formula `ChunkRenderDistance * 16 + 8` was an arbitrary offset from the pre-streaming era that could land in ocean depending on seed.
+
+### 3.13 Why Build From Scratch (Not Use Existing Voxel Libraries)
 
 Evaluated options:
 - **Zylann's godot_voxel** (C++): Powerful but C# bindings are broken, and it's overkill for colony sim needs
@@ -344,6 +360,9 @@ When the game runs, it loads the pre-baked collision shapes from the scene AND c
 2. **Don't accept workarounds that "look right."** Verify the fix is actually correct (check lighting, normals, physics behavior — not just visual appearance).
 3. **Change one thing at a time.** When debugging, isolate variables. Test with the simplest case (one block, one face).
 4. **Search the web first.** Most Godot/voxel issues have known solutions.
+5. **Limit to 3 attempts before reassessing.** If the same approach fails 3 times, stop coding. Re-read the relevant Godot docs or search the web. The bug is likely in a different place than you think (data vs code, scene files vs scripts, timing vs logic).
+6. **Check data before code.** Many "code bugs" are actually data problems: bloated `.tscn` files, wrong shader uniforms in `project.godot`, missing collision shapes due to timing. Verify the data pipeline before debugging the logic.
+7. **Don't add complexity to work around symptoms.** If a colonist falls through the floor, don't add bounce-back logic — find why there's no floor. Grace timers, extra raycasts, and retry loops usually indicate the root cause hasn't been found.
 
 ---
 
@@ -376,6 +395,7 @@ When the game runs, it loads the pre-baked collision shapes from the scene AND c
 | 21 | Y-level camera slicing (shader-based Y-clip, Page Up/Down controls, raycast pierce) | Done |
 | 22 | Performance: distance-based collision, increased pipeline throughput, reduced shadows | Done |
 | 23 | Performance: single-surface chunks (merge all opaque blocks, ~6x fewer draw calls) | Done |
+| 24 | Colonist spawn safety (deferred physics, cave-safe height, origin spawn) | Done |
 
 ### Future Phases (not yet planned in detail):
 - Multiple colonists
@@ -479,6 +499,10 @@ colonysim-3d/
 25. **Never create one mesh surface per block type.** Each mesh surface = 1 draw call. With 12 block types and 13k chunks, that's ~80k draw calls — way too many. Instead, merge all opaque blocks into a single surface with per-vertex colors. Only water needs a separate surface (different shader). Max 2 surfaces per chunk = max ~26k draw calls (after frustum culling: ~6-8k).
 
 26. **Share ShaderMaterial instances across chunks.** Since chunk shaders have no per-material uniforms (all differentiation via vertex colors and global uniforms), a single `ShaderMaterial` instance can be shared by all chunks. This avoids allocating 80k+ material objects.
+
+27. **Colonist physics must be frozen until chunks load.** `CharacterBody3D` gravity applies every `_PhysicsProcess` frame. At startup, zero chunks exist — the colonist falls through void in 1-2 frames. Use `_physicsReady` flag and enable only after `World.IsChunkReady()` confirms the spawn chunk has a mesh. Never assume collision exists at `_Ready()` time. See section 3.12.
+
+28. **`GetSurfaceHeight()` returns noise height, not actual surface.** Caves carved below terrain create air pockets the noise doesn't know about. After chunks load, use `World.GetBlock()` to scan downward and find the real highest solid block. Don't rely on noise height for colonist placement after cave generation was added.
 
 ---
 
