@@ -26,6 +26,8 @@ public class TerrainGenerator
     private readonly FastNoiseLite _riverWidthNoise;
     private readonly int _seed;
     private readonly CaveGenerator _caveGenerator;
+    private readonly GeologyGenerator _geologyGenerator;
+    private readonly OreGenerator _oreGenerator;
 
     // Thread-local surface height cache for passing to CaveGenerator
     [ThreadStatic] private static int[] _surfaceHeightCache;
@@ -62,10 +64,11 @@ public class TerrainGenerator
         public readonly float Continental, Elevation, Detail, River;
         public readonly float CNorm, TNorm, MNorm;
         public readonly float RiverWidthMod;    // width multiplier (0.5–2.0) for variable-width channels
+        public readonly float Province;          // geological province [0,1] for rock type selection
 
         public ColumnSample(float continental, float elevation, float detail, float river,
                             float cNorm, float tNorm, float mNorm,
-                            float riverWidthMod)
+                            float riverWidthMod, float province)
         {
             Continental = continental;
             Elevation = elevation;
@@ -75,6 +78,7 @@ public class TerrainGenerator
             TNorm = tNorm;
             MNorm = mNorm;
             RiverWidthMod = riverWidthMod;
+            Province = province;
         }
     }
 
@@ -143,7 +147,13 @@ public class TerrainGenerator
         // Cave generator: dual-threshold 3D noise for spaghetti caves
         _caveGenerator = new CaveGenerator(seed);
 
-        GD.Print($"TerrainGenerator initialized: seed={seed}, waterLevel={WaterLevel}, maxHeight={MaxHeight}, biomes=6, treeGrid={TreeGenerator.TreeGridSize}, caves=ON, riverWidth=variable");
+        // Geology generator: depth bands + province noise for rock type variation
+        _geologyGenerator = new GeologyGenerator(seed);
+
+        // Ore generator: Tier 1 cluster ores (Coal, Iron, Copper, Tin)
+        _oreGenerator = new OreGenerator(seed);
+
+        GD.Print($"TerrainGenerator initialized: seed={seed}, waterLevel={WaterLevel}, maxHeight={MaxHeight}, biomes=6, treeGrid={TreeGenerator.TreeGridSize}, caves=ON, riverWidth=variable, geology=ON, ores=Tier1");
     }
 
     /// <summary>
@@ -162,12 +172,16 @@ public class TerrainGenerator
         float widthRaw = _riverWidthNoise.GetNoise2D(worldX, worldZ);
         float widthMod = Mathf.Lerp(RiverWidthMin, RiverWidthMax, (widthRaw + 1f) * 0.5f);
 
+        // Geological province: determines rock type distribution underground
+        float province = _geologyGenerator.SampleProvince(worldX, worldZ);
+
         return new ColumnSample(
             continental, elevation, detail, river,
             (continental + 1f) * 0.5f,
             (temp + 1f) * 0.5f,
             (moisture + 1f) * 0.5f,
-            widthMod
+            widthMod,
+            province
         );
     }
 
@@ -374,7 +388,14 @@ public class TerrainGenerator
                 }
                 else
                 {
-                    blocks[lx, ly, lz] = BlockType.Stone;
+                    // Deep underground: geological rock type based on depth and province
+                    int depthBelowSurface = surfaceHeight - worldY;
+                    BlockType rock = _geologyGenerator.GetRockType(
+                        worldX, worldY, worldZ, surfaceHeight, sample.Province);
+
+                    // Ore placement: may replace rock with ore if depth/host-rock match
+                    blocks[lx, ly, lz] = _oreGenerator.TryPlaceOre(
+                        worldX, worldY, worldZ, depthBelowSurface, rock);
                 }
             }
         }

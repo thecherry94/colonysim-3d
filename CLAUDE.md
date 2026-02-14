@@ -184,7 +184,8 @@ Block types by position:
 - Surface: determined by biome (`BiomeData.SurfaceBlock` — Grass, RedSand, Snow, Stone), with sand at water edges
 - Subsurface (3 layers): determined by biome (`BiomeData.SubSurfaceBlock`), sand at water edges
 - Underwater: determined by biome (`BiomeData.UnderwaterSurface`)
-- Deep: Stone everywhere
+- Deep: Geological rock layers (see section 3.14)
+- Ore deposits embedded in appropriate host rocks (see section 3.15)
 - Water fills from terrain up to global water level
 
 ### 3.8 Greedy Meshing
@@ -274,7 +275,49 @@ The colonist must not receive physics (gravity) until the chunks around it have 
 
 **Spawn origin:** The colonist spawns near world origin `(0, 0)` and `FindDryLandNear()` searches outward for dry land. The old formula `ChunkRenderDistance * 16 + 8` was an arbitrary offset from the pre-streaming era that could land in ocean depending on seed. `FindDryLandNear()` also avoids river channels (via `World.IsRiverAt()`) and prefers elevated positions (`WaterLevel + 5`) to avoid spawning in valleys.
 
-### 3.13 Why Build From Scratch (Not Use Existing Voxel Libraries)
+### 3.14 Geological Layer System
+
+Underground rock types vary by **depth below surface** and **horizontal geological province**, replacing the previous uniform Stone fill. Inspired by Dwarf Fortress's geological layers and Vintage Story's geologic provinces.
+
+**Depth Bands** (measured from surface, boundaries offset ±4 blocks by 2D noise):
+| Band | Depth | Rock Types | Character |
+|------|-------|-----------|-----------|
+| Soil | 0-3 | Dirt/Sand/Clay (existing biome subsurface) | Already implemented |
+| Upper Stone | 4-20 | Sedimentary: Limestone, Sandstone, Mudstone | Common ores (coal, iron) |
+| Mid Stone | 20-45 | Igneous/Metamorphic: Granite, Basalt, Andesite, Marble, Slate | Valuable ores |
+| Deep Stone | 45+ | Deepstone + Quartzite pockets | Rare ores, danger |
+
+**Province Noise** (2D, freq 0.002): Selects which rock type dominates within each band. Province [0, 0.33): Limestone/Granite dominant. Province [0.33, 0.66): Sandstone/Basalt dominant. Province [0.66, 1.0]: Mudstone/Andesite dominant. Different regions have different geology — ores are hosted by specific rocks, so geology determines available resources.
+
+**Rock Blob Noise** (3D, freq 0.05): Creates pockets of secondary rock within the dominant matrix (~25-30% volume). Breaks up visual monotony within bands.
+
+**Band Boundary Noise** (2D, freq 0.015): Offsets depth band transitions by ±4 blocks to create undulating boundaries instead of flat artificial lines.
+
+**Implementation:** `GeologyGenerator.cs` owns 3 noise instances. Single method `GetRockType(worldX, worldY, worldZ, surfaceY, province)` returns the appropriate `BlockType`. Called per-block from `GenerateChunkBlocks()` for blocks deeper than the soil layer. Province value is sampled once per column in `SampleColumn()` and stored in `ColumnSample.Province`.
+
+### 3.15 Ore Generation (Tier 1)
+
+Four Tier 1 ores placed as noise-based cluster deposits in the Upper Stone band. Each ore has its own 3D noise field, depth range, and **host rock restrictions** — ores only replace specific geological rock types.
+
+| Ore | BlockType ID | Depth | Host Rocks | Noise Freq | Threshold | Cluster Size |
+|-----|-------------|-------|-----------|-----------|-----------|-------------|
+| Coal | 23 | 5-30 | Sedimentary | 0.08 | 0.60 | 50-150 blocks |
+| Iron | 24 | 10-35 | Sedimentary | 0.10 | 0.65 | 30-80 blocks |
+| Copper | 25 | 5-25 | Any rock | 0.09 | 0.68 | 20-60 blocks |
+| Tin | 26 | 10-30 | Sed. + Meta. | 0.11 | 0.72 | 10-30 blocks |
+
+**Host Rock Restriction** creates natural regional variation: areas with Granite underground (igneous) won't have iron or coal (which require sedimentary rock), but will have copper. This means different starting locations have different resource profiles.
+
+**Generation Order:** Ore placement runs AFTER geology fill but BEFORE cave carving:
+1. Terrain fill (surface/subsurface blocks)
+2. Geology fill (replaces Stone with rock types)
+3. Ore placement (replaces some rock with ore)
+4. Cave carving (may remove ore blocks, naturally exposing ore in cave walls)
+5. Tree placement
+
+**Implementation:** `OreGenerator.cs` owns 4 noise instances. `TryPlaceOre(worldX, worldY, worldZ, depthBelowSurface, currentRock)` checks each ore's depth/host-rock/threshold conditions and returns the ore `BlockType` if placed, or the original rock if not. Rarer ores checked first to avoid being overwritten.
+
+### 3.16 Why Build From Scratch (Not Use Existing Voxel Libraries)
 
 Evaluated options:
 - **Zylann's godot_voxel** (C++): Powerful but C# bindings are broken, and it's overkill for colony sim needs
@@ -402,14 +445,19 @@ When the game runs, it loads the pre-baked collision shapes from the scene AND c
 | 23 | Performance: single-surface chunks (merge all opaque blocks, ~6x fewer draw calls) | Done |
 | 24 | Colonist spawn safety (deferred physics, cave-safe height, origin spawn) | Done |
 | 25 | Variable-width rivers (width modulation noise, Minecraft-style global water level) | Done |
+| 26 | Geological layers (10 rock types, depth bands, province noise, boundary noise) | Done |
+| 27 | Tier 1 ore generation (Coal, Iron, Copper, Tin — noise clusters, host-rock restrictions) | Done |
 
 ### Future Phases (not yet planned in detail):
+- Cave decoration (moss, glowing mushrooms, stalactites by depth — see WORLDGEN_PLAN.md Phase B)
+- Expanded biomes (14 biomes, 6 tree styles, 4D selection — see WORLDGEN_PLAN.md Phase C)
+- Terrain drama (cliff faces, mesa terracing, plateau flat-tops — see WORLDGEN_PLAN.md Phase D)
+- Deep underground (lava, crystal/magma caves, Tier 2-3 ores — see WORLDGEN_PLAN.md Phase E)
+- Structures & POIs (ruins, abandoned mines, stone circles — see WORLDGEN_PLAN.md Phase F)
 - Multiple colonists
 - Task/job system (mine, build, haul designations)
 - Inventory and resource system (mined blocks become items)
 - Colonist needs (hunger, rest, mood)
-- More block types (ore)
-- Better terrain (overhangs, ore veins)
 - Selection system (click to select colonists, area designation)
 - Save/load system (disk persistence for modified chunks)
 - UI (menus, status panels, notifications)
@@ -422,6 +470,7 @@ When the game runs, it loads the pre-baked collision shapes from the scene AND c
 colonysim-3d/
 ├── project.godot
 ├── CLAUDE.md
+├── WORLDGEN_PLAN.md                      # World generation research & phased implementation plan
 ├── main.tscn                             # Entry scene (KEEP MINIMAL — see lesson 5.3)
 ├── shaders/
 │   ├── chunk_opaque.gdshader             # Vertex-color lit shader + Y-level slice (solid blocks)
@@ -432,11 +481,13 @@ colonysim-3d/
 │   │   ├── World.cs                      # Chunk manager, streaming, chunk cache, collision radius
 │   │   ├── Chunk.cs                      # 16x16x16 block storage, mesh, distance-based collision
 │   │   ├── ChunkMeshGenerator.cs         # Greedy meshing, single-surface opaque + water, collision
-│   │   ├── TerrainGenerator.cs           # 5-layer FastNoiseLite terrain + biomes + rivers
+│   │   ├── TerrainGenerator.cs           # 7-layer FastNoiseLite terrain + biomes + rivers + geology
+│   │   ├── GeologyGenerator.cs           # Depth-banded rock layers + province noise (Phase A)
+│   │   ├── OreGenerator.cs               # Tier 1 noise-cluster ore deposits (Phase A)
 │   │   ├── TreeGenerator.cs              # Deterministic grid-based tree placement
 │   │   ├── CaveGenerator.cs              # Dual-threshold 3D noise cave carving
 │   │   ├── Biome.cs                      # BiomeType enum, BiomeData struct, BiomeTable
-│   │   └── Block.cs                      # BlockType enum + BlockData utilities
+│   │   └── Block.cs                      # BlockType enum (27 types) + BlockData utilities
 │   ├── navigation/
 │   │   ├── VoxelPathfinder.cs            # A* on voxel grid (8-connected, toggleable diagonals)
 │   │   └── PathRequest.cs                # VoxelNode, PathResult data structures
@@ -513,6 +564,14 @@ colonysim-3d/
 29. **River water follows Minecraft-style global water level.** All water sits at `WaterLevel` (45) — no per-section local water levels. Rivers that carve below sea level fill with water naturally; rivers above sea level are dry valleys. This avoids water wall artifacts at wet/dry boundaries. Per-section local water levels were tried and produced visible water walls where noise thresholds changed.
 
 30. **River width modulation is a separate noise from river path.** The width noise (freq 0.018) modulates the channel shape via `RiverWidthMod` (0.5–2.0×), stored in `ColumnSample` and used consistently in `ComputeHeight()` and `IsRiverChannel()`.
+
+31. **Geology and ore generation run BETWEEN terrain fill and cave carving.** Pipeline order: terrain height → biome surface/subsurface → geology rock types → ore placement → cave carving → trees. This means ores naturally appear in cave walls when caves carve through ore deposits. Changing this order will break the ore-in-cave-walls feature.
+
+32. **Province noise should be sampled once per column, not per block.** `GeologyGenerator.SampleProvince()` is 2D (XZ only). The value is stored in `ColumnSample.Province` and reused for all blocks in the column. Sampling it per-block would waste ~15 noise evaluations per column with identical results.
+
+33. **Ore host-rock restrictions create natural regional variation.** Iron and Coal only spawn in sedimentary rock (Limestone, Sandstone, Mudstone). If a region's upper stone band is Granite-dominant, it won't have iron — but it will have copper (which spawns in any upper stone rock). This is by design, not a bug.
+
+34. **All new rock and ore types are solid.** `BlockData.IsSolid()` returns true for all geological rocks and ores. Existing meshing, collision, pathfinding, and face culling handle them automatically with zero changes needed.
 
 ---
 

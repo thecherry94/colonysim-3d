@@ -21,6 +21,28 @@ public enum BlockType : byte
     Clay = 10,
     Wood = 11,
     Leaves = 12,
+
+    // === Phase A: Geological rock types ===
+    // Sedimentary (Upper Stone band, 4-20 blocks below surface)
+    Limestone = 13,
+    Sandstone = 14,
+    Mudstone = 15,
+    // Igneous (Mid Stone band, 20-45 blocks below surface)
+    Granite = 16,
+    Basalt = 17,
+    Andesite = 18,
+    // Metamorphic (Mid Stone band transitions)
+    Marble = 19,
+    Slate = 20,
+    Quartzite = 21,
+    // Deep (45+ blocks below surface)
+    Deepstone = 22,
+
+    // === Phase A: Tier 1 Ores ===
+    CoalOre = 23,
+    IronOre = 24,
+    CopperOre = 25,
+    TinOre = 26,
 }
 
 /// <summary>
@@ -45,6 +67,22 @@ public static class BlockData
         BlockType.Clay => new Color(0.65f, 0.50f, 0.38f),
         BlockType.Wood => new Color(0.55f, 0.35f, 0.18f),
         BlockType.Leaves => new Color(0.20f, 0.55f, 0.15f),
+        // Geological rock types
+        BlockType.Limestone => new Color(0.78f, 0.76f, 0.68f),
+        BlockType.Sandstone => new Color(0.76f, 0.60f, 0.42f),
+        BlockType.Mudstone => new Color(0.50f, 0.45f, 0.38f),
+        BlockType.Granite => new Color(0.68f, 0.63f, 0.62f),
+        BlockType.Basalt => new Color(0.30f, 0.30f, 0.32f),
+        BlockType.Andesite => new Color(0.52f, 0.52f, 0.50f),
+        BlockType.Marble => new Color(0.88f, 0.87f, 0.85f),
+        BlockType.Slate => new Color(0.38f, 0.40f, 0.45f),
+        BlockType.Quartzite => new Color(0.82f, 0.80f, 0.78f),
+        BlockType.Deepstone => new Color(0.25f, 0.25f, 0.28f),
+        // Tier 1 Ores
+        BlockType.CoalOre => new Color(0.20f, 0.20f, 0.22f),
+        BlockType.IronOre => new Color(0.60f, 0.42f, 0.35f),
+        BlockType.CopperOre => new Color(0.55f, 0.72f, 0.52f),
+        BlockType.TinOre => new Color(0.62f, 0.60f, 0.55f),
         _ => Colors.Transparent,
     };
 
