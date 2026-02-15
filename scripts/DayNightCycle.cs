@@ -229,12 +229,12 @@ public partial class DayNightCycle : Node
         _moon.LightColor = new Color(0.6f, 0.7f, 0.9f);
         _moon.LightEnergy = 0.15f;
         _moon.ShadowEnabled = true;
-        _moon.ShadowBias = 0.15f;
+        _moon.ShadowBias = 0.05f;
         _moon.ShadowNormalBias = 2.0f;
         _moon.ShadowOpacity = 0.3f; // faint moonlight shadows
-        _moon.DirectionalShadowMaxDistance = 100f; // shorter range than sun
+        _moon.DirectionalShadowMaxDistance = 80f; // shorter range than sun
         _moon.DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel2Splits; // cheaper
-        _moon.LightAngularDistance = 2.0f; // larger disk = softer shadows
+        // PCSS disabled (LightAngularDistance = 0) — Godot bug #86536
         _moon.SkyMode = DirectionalLight3D.SkyModeEnum.LightAndSky; // visible moon disk
 
         // Start at configured time

@@ -32,6 +32,7 @@ project/assembly_name="colonysim-3D"
 [rendering]
 
 rendering_device/driver.windows="d3d12"
+lights_and_shadows/directional_shadow/size=8192
 
 [shader_globals]
 

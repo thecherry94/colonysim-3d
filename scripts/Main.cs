@@ -105,6 +105,11 @@ public partial class Main : Node3D
     /// </summary>
     private void SetupDynamicLighting()
     {
+        // Increase soft shadow filter quality (PCF samples) for smoother shadow edges.
+        // Default SoftLow produces visible stair-stepping on voxel geometry.
+        RenderingServer.DirectionalSoftShadowFilterSetQuality(
+            RenderingServer.ShadowQuality.SoftMedium);
+
         // --- Sun light ---
         _sunLight = new DirectionalLight3D();
         _sunLight.Name = "SunLight";
@@ -113,12 +118,18 @@ public partial class Main : Node3D
         // Sun color and energy will be set by DayNightCycle each frame.
         // Configure shadow properties here (these don't change with time of day).
         _sunLight.ShadowEnabled = true;
-        _sunLight.ShadowBias = 0.1f;
+        _sunLight.ShadowBias = 0.05f;
         _sunLight.ShadowNormalBias = 2.0f;
+        _sunLight.ShadowBlur = 1.5f;  // softer shadow edges via PCF blur
         _sunLight.ShadowOpacity = 1.0f;
-        _sunLight.DirectionalShadowMaxDistance = 200f;
+        _sunLight.DirectionalShadowMaxDistance = 100f;  // was 200 — halved for 2x shadow resolution
         _sunLight.DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel4Splits;
-        _sunLight.LightAngularDistance = 1.0f; // softer shadow edges
+        _sunLight.DirectionalShadowBlendSplits = true;  // smooth cascade transitions
+        _sunLight.DirectionalShadowSplit1 = 0.05f;  // front-load resolution near camera
+        _sunLight.DirectionalShadowSplit2 = 0.15f;
+        _sunLight.DirectionalShadowSplit3 = 0.40f;
+        // PCSS (LightAngularDistance) disabled — known Godot bug #86536 causes shadow
+        // degradation far from world origin. Use ShadowBlur + PCF filter quality instead.
 
         // --- Sky and Environment ---
         var worldEnv = GetNodeOrNull<WorldEnvironment>("WorldEnvironment");
